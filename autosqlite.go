@@ -294,7 +294,7 @@ func MigrateToNewFile(schema, oldDbPath string, newDbPath string) (*sql.DB, erro
 }
 
 // SchemasEqual compares the provided schema with the existing database schema at dbPath.
-// Returns true if the schemas are equivalent (same tables, columns, and properties).
+// Returns true if the schemas are equivalent (same tables, columns, triggers, indexes, and views).
 func SchemasEqual(schema, dbPath string) bool {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
@@ -302,7 +302,7 @@ func SchemasEqual(schema, dbPath string) bool {
 	}
 	defer db.Close()
 
-	existingTables, err := GetTables(db)
+	dbSchema, err := getFullSchema(db)
 	if err != nil {
 		return false
 	}
@@ -317,76 +317,50 @@ func SchemasEqual(schema, dbPath string) bool {
 		os.Remove(tempPath)
 	}()
 
+	// Always create the _autosqlite_version table in the temp DB
+	if err := createVersionTable(tempDB); err != nil {
+		return false
+	}
+
 	if _, err := tempDB.Exec(schema); err != nil {
 		return false
 	}
 
-	newTables, err := GetTables(tempDB)
+	tempSchema, err := getFullSchema(tempDB)
 	if err != nil {
 		return false
 	}
 
-	if !slices.Equal(existingTables, newTables) {
+	if len(dbSchema) != len(tempSchema) {
 		return false
 	}
-
-	for _, tableName := range existingTables {
-		if !TableStructuresEqual(db, tempDB, tableName) {
+	for i := range dbSchema {
+		if dbSchema[i] != tempSchema[i] {
 			return false
 		}
 	}
-
 	return true
 }
 
-// TableStructuresEqual compares the structure of a table between two databases.
-// Returns true if the columns and their properties are identical.
-func TableStructuresEqual(db1, db2 *sql.DB, tableName string) bool {
-	columns1, err := GetTableInfo(db1, tableName)
-	if err != nil {
-		return false
-	}
-
-	columns2, err := GetTableInfo(db2, tableName)
-	if err != nil {
-		return false
-	}
-
-	if len(columns1) != len(columns2) {
-		return false
-	}
-
-	for i, col1 := range columns1 {
-		col2 := columns2[i]
-		if col1 != col2 {
-			return false
-		}
-	}
-
-	return true
-}
-
-// GetTableInfo returns detailed table information as strings for comparison.
-// Each string contains column name, type, nullability, default value, and primary key status.
-func GetTableInfo(db *sql.DB, tableName string) ([]string, error) {
-	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", tableName))
+// getFullSchema returns a sorted, normalized list of all schema SQL statements for tables, indexes, triggers, and views.
+func getFullSchema(db *sql.DB) ([]string, error) {
+	rows, err := db.Query(`SELECT type, name, sql FROM sqlite_master WHERE type IN ('table','index','trigger','view') AND name NOT LIKE 'sqlite_%' ORDER BY type, name`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var columns []string
+	var schema []string
 	for rows.Next() {
-		var index int
-		var name, typ, notNull string
-		var defaultValue, pk sql.NullString
-		if err := rows.Scan(&index, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+		var typ, name, sqlStmt string
+		if err := rows.Scan(&typ, &name, &sqlStmt); err != nil {
 			return nil, err
 		}
-		colStr := fmt.Sprintf("%s:%s:%s:%s:%s", name, typ, notNull, defaultValue.String, pk.String)
-		columns = append(columns, colStr)
+		// Normalize whitespace
+		sqlStmt = strings.TrimSpace(sqlStmt)
+		schema = append(schema, fmt.Sprintf("%s|%s|%s", typ, name, sqlStmt))
 	}
-	return columns, rows.Err()
+	return schema, rows.Err()
 }
 
 // GetTables returns a list of user table names in the database (ignores _autosqlite_version).

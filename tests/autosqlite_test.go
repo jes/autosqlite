@@ -949,6 +949,51 @@ func DISABLED_TestViewNotPreserved(t *testing.T) {
 	t.Logf("View was dropped during migration as expected")
 }
 
+func TestTriggerMigration(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`
+	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+	CREATE TRIGGER user_insert AFTER INSERT ON users BEGIN
+	  INSERT INTO users (name) VALUES ('triggered');
+	END;`
+
+	// Create DB with schemaV1
+	db, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	db.Close()
+
+	// Migrate to schemaV2 (should add the trigger)
+	db2, err := autosqlite.Open(schemaV2, dbPath)
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	defer db2.Close()
+
+	// Check that the trigger exists
+	row := db2.QueryRow("SELECT name FROM sqlite_master WHERE type='trigger' AND name='user_insert'")
+	var trigName string
+	if err := row.Scan(&trigName); err != nil || trigName != "user_insert" {
+		t.Fatalf("trigger was not created by migration: %v", err)
+	}
+
+	// Check that the trigger works: insert a user, should auto-insert another
+	_, err = db2.Exec("INSERT INTO users (name) VALUES ('bob')")
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+	row = db2.QueryRow("SELECT COUNT(*) FROM users WHERE name='triggered'")
+	var count int
+	if err := row.Scan(&count); err != nil {
+		t.Fatalf("failed to count triggered rows: %v", err)
+	}
+	if count == 0 {
+		t.Fatalf("trigger did not fire as expected")
+	}
+}
+
 func tempDBPath(t *testing.T) string {
 	dir := t.TempDir()
 	return filepath.Join(dir, "test.db")
