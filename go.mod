@@ -1,4 +1,4 @@
-module github.com/jes/autosqlite
+module github.com/jes/autosqlite v0.1.0
 
 go 1.24.4
 
