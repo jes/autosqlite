@@ -40,6 +40,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/gofrs/flock"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -87,14 +88,31 @@ func Open(schema, dbPath string) (*sql.DB, error) {
 // Migrate migrates an existing SQLite database at dbPath to the provided schema.
 // It creates a backup with a ".backup" extension, migrates data for common columns,
 // and atomically replaces the old database.
+//
 // Returns a *sql.DB handle or an error.
 func Migrate(schema, dbPath string) (*sql.DB, error) {
 	backupPath := dbPath + ".backup"
+	newDbPath := dbPath + ".tmp"
+
+	// Lock using the database path, not the tmp path
+	lockPath := dbPath + ".migration.lock"
+	tmpLock := flock.New(lockPath)
+	locked, err := tmpLock.TryLock()
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire migration lock: %w", err)
+	}
+	if !locked {
+		return nil, fmt.Errorf("another migration is already in progress for %s", dbPath)
+	}
+	defer func() {
+		tmpLock.Unlock()
+		os.Remove(lockPath) // Clean up lock file
+	}()
+
 	if err := copyFile(dbPath, backupPath); err != nil {
 		return nil, fmt.Errorf("failed to create backup: %w", err)
 	}
 
-	newDbPath := dbPath + ".tmp"
 	db, err := MigrateToNewFile(schema, dbPath, newDbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to migrate to new file: %w", err)
@@ -114,6 +132,7 @@ func Migrate(schema, dbPath string) (*sql.DB, error) {
 
 // MigrateToNewFile migrates an existing SQLite database at oldDbPath to the provided schema,
 // writing the result to newDbPath. It migrates data for common columns and tables.
+//
 // Returns a *sql.DB handle to the new database or an error.
 func MigrateToNewFile(schema, oldDbPath string, newDbPath string) (*sql.DB, error) {
 	oldDB, err := sql.Open("sqlite3", oldDbPath)
