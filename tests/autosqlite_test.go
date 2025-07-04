@@ -528,6 +528,67 @@ func TestLargeDatasetMigration(t *testing.T) {
 	}
 }
 
+func TestConcurrentMigration(t *testing.T) {
+	const numGoroutines = 20
+	const numIterations = 10
+
+	schema1 := "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);"
+	schema2 := "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT);"
+
+	for iter := 0; iter < numIterations; iter++ {
+		dbPath := tempDBPath(t)
+
+		// Create initial database
+		db, err := autosqlite.Open(schema1, dbPath)
+		if err != nil {
+			t.Fatalf("[%d] failed to create db: %v", iter, err)
+		}
+		_, err = db.Exec("INSERT INTO users (name) VALUES ('concurrent')")
+		if err != nil {
+			t.Fatalf("[%d] failed to insert: %v", iter, err)
+		}
+		db.Close()
+
+		start := make(chan struct{})
+		results := make(chan error, numGoroutines)
+
+		for i := 0; i < numGoroutines; i++ {
+			go func() {
+				<-start
+				_, err := autosqlite.Migrate(schema2, dbPath)
+				results <- err
+			}()
+		}
+
+		close(start) // Start all migrations at the same time
+
+		var gotSuccess int
+		for i := 0; i < numGoroutines; i++ {
+			err := <-results
+			if err != nil {
+				t.Fatalf("[%d] concurrent migration failed: %v", iter, err)
+			}
+			gotSuccess++
+		}
+		if gotSuccess != numGoroutines {
+			t.Fatalf("[%d] expected all migrations to succeed, got %d", iter, gotSuccess)
+		}
+
+		// Verify the database is correct
+		db2, err := autosqlite.Open(schema2, dbPath)
+		if err != nil {
+			t.Fatalf("[%d] failed to open db after concurrent migration: %v", iter, err)
+		}
+		defer db2.Close()
+
+		row := db2.QueryRow("SELECT name FROM users WHERE id=1")
+		var name string
+		if err := row.Scan(&name); err != nil || name != "concurrent" {
+			t.Fatalf("[%d] data not preserved after concurrent migration: %v", iter, err)
+		}
+	}
+}
+
 func tempDBPath(t *testing.T) string {
 	dir := t.TempDir()
 	return filepath.Join(dir, "test.db")

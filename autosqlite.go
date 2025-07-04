@@ -97,17 +97,22 @@ func Migrate(schema, dbPath string) (*sql.DB, error) {
 	// Lock using the database path, not the tmp path
 	lockPath := dbPath + ".migration.lock"
 	tmpLock := flock.New(lockPath)
-	locked, err := tmpLock.TryLock()
-	if err != nil {
+	if err := tmpLock.Lock(); err != nil {
 		return nil, fmt.Errorf("failed to acquire migration lock: %w", err)
-	}
-	if !locked {
-		return nil, fmt.Errorf("another migration is already in progress for %s", dbPath)
 	}
 	defer func() {
 		tmpLock.Unlock()
 		os.Remove(lockPath) // Clean up lock file
 	}()
+
+	// Re-check schema after acquiring the lock
+	if SchemasEqual(schema, dbPath) {
+		db, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open existing database: %w", err)
+		}
+		return db, nil
+	}
 
 	if err := copyFile(dbPath, backupPath); err != nil {
 		return nil, fmt.Errorf("failed to create backup: %w", err)
