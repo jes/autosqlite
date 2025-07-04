@@ -2,6 +2,7 @@ package tests
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -177,6 +178,41 @@ func TestMigrationDeletesTable(t *testing.T) {
 	var name string
 	if err := row.Scan(&name); err == nil {
 		t.Fatalf("posts table should have been deleted")
+	}
+}
+
+func TestIdenticalSchemaSkipMigration(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Create database with schemaV1
+	db1, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	_, err = db1.Exec("INSERT INTO users (name) VALUES ('test')")
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+	db1.Close()
+
+	// Open with same schema - should skip migration
+	db2, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to open db with identical schema: %v", err)
+	}
+	defer db2.Close()
+
+	// Verify data is still there (no migration occurred)
+	row := db2.QueryRow("SELECT name FROM users WHERE id=1")
+	var name string
+	if err := row.Scan(&name); err != nil || name != "test" {
+		t.Fatalf("data not preserved: %v", err)
+	}
+
+	// Verify no backup file was created (since no migration occurred)
+	backupPath := dbPath + ".backup"
+	if _, err := os.Stat(backupPath); err == nil {
+		t.Fatalf("backup file was created unnecessarily")
 	}
 }
 

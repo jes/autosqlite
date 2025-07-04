@@ -17,6 +17,15 @@ import (
 func Open(schema, dbPath string) (*sql.DB, error) {
 	// Check if database already exists
 	if _, err := os.Stat(dbPath); err == nil {
+		// Check if schemas are identical to avoid unnecessary migration
+		if schemasEqual(schema, dbPath) {
+			// Schemas are the same, just open the existing database
+			db, err := sql.Open("sqlite3", dbPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to open existing database: %w", err)
+			}
+			return db, nil
+		}
 		return Migrate(schema, dbPath)
 	}
 
@@ -45,6 +54,110 @@ func Open(schema, dbPath string) (*sql.DB, error) {
 	}
 
 	return db, nil
+}
+
+// schemasEqual compares the provided schema with the existing database schema
+func schemasEqual(schema, dbPath string) bool {
+	// Open existing database
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return false
+	}
+	defer db.Close()
+
+	// Get existing tables
+	existingTables, err := getTables(db)
+	if err != nil {
+		return false
+	}
+
+	// Create temporary database with new schema
+	tempPath := dbPath + ".schema_check"
+	tempDB, err := sql.Open("sqlite3", tempPath)
+	if err != nil {
+		return false
+	}
+	defer func() {
+		tempDB.Close()
+		os.Remove(tempPath)
+	}()
+
+	// Execute new schema on temporary database
+	if _, err := tempDB.Exec(schema); err != nil {
+		return false
+	}
+
+	// Get new tables
+	newTables, err := getTables(tempDB)
+	if err != nil {
+		return false
+	}
+
+	// Check if table lists are identical
+	if !slices.Equal(existingTables, newTables) {
+		return false
+	}
+
+	// Compare each table's structure
+	for _, tableName := range existingTables {
+		if !tableStructuresEqual(db, tempDB, tableName) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// tableStructuresEqual compares the structure of a table between two databases
+func tableStructuresEqual(db1, db2 *sql.DB, tableName string) bool {
+	columns1, err := getTableInfo(db1, tableName)
+	if err != nil {
+		return false
+	}
+
+	columns2, err := getTableInfo(db2, tableName)
+	if err != nil {
+		return false
+	}
+
+	if len(columns1) != len(columns2) {
+		return false
+	}
+
+	for i, col1 := range columns1 {
+		col2 := columns2[i]
+		if col1 != col2 {
+			return false
+		}
+	}
+
+	return true
+}
+
+// getTableInfo returns detailed table information as strings for comparison
+func getTableInfo(db *sql.DB, tableName string) ([]string, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", tableName))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var columns []string
+	for rows.Next() {
+		var index int
+		var name, typ, notNull string
+		var defaultValue, pk sql.NullString
+		if err := rows.Scan(&index, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return nil, err
+		}
+
+		// Create a string representation of the column for comparison
+		colStr := fmt.Sprintf("%s:%s:%s:%s:%s",
+			name, typ, notNull,
+			defaultValue.String, pk.String)
+		columns = append(columns, colStr)
+	}
+	return columns, rows.Err()
 }
 
 func Migrate(schema, dbPath string) (*sql.DB, error) {
