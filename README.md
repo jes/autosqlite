@@ -173,3 +173,4 @@ See the `cmd/autosqlite/` directory for a complete working example.
 ## Dependencies
 
 - `github.com/mattn/go-sqlite3` - SQLite driver for Go 
+- `github.com/gofrs/flock` - Cross-platform file locking
