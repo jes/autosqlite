@@ -1,3 +1,35 @@
+// Package autosqlite provides automatic SQLite database creation and migration
+// from a schema string. It can create a new database, migrate an existing one
+// to a new schema, and ensures data is preserved for common columns and tables.
+//
+// Features:
+//   - Automatic schema migration
+//   - Data preservation for common columns
+//   - Backup and atomic replacement
+//   - Skips migration if schema is unchanged
+//
+// Usage:
+//
+//	package main
+//
+//	import (
+//	    "log"
+//	    "github.com/jes/autosqlite"
+//	    _ "github.com/mattn/go-sqlite3"
+//	    "embed"
+//	)
+//
+//	//go:embed schema.sql
+//	var schemaSQL string
+//
+//	func main() {
+//	    db, err := autosqlite.Open(schemaSQL, "myapp.db")
+//	    if err != nil {
+//	        log.Fatal(err)
+//	    }
+//	    defer db.Close()
+//	    // ...
+//	}
 package autosqlite
 
 import (
@@ -11,15 +43,15 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// Open creates a new SQLite database from a schema file.
-// If the database file already exists, it migrates the existing data to the new schema.
-// If the database doesn't exist, it creates it using the provided schema.
+// Open creates or migrates a SQLite database at dbPath using the provided schema SQL.
+// If the database does not exist, it is created. If it exists and the schema is unchanged,
+// the database is opened as-is. If the schema has changed, a migration is performed and
+// the previous database file is backed up with a ".backup" extension.
+//
+// Returns a *sql.DB handle or an error.
 func Open(schema, dbPath string) (*sql.DB, error) {
-	// Check if database already exists
 	if _, err := os.Stat(dbPath); err == nil {
-		// Check if schemas are identical to avoid unnecessary migration
-		if schemasEqual(schema, dbPath) {
-			// Schemas are the same, just open the existing database
+		if SchemasEqual(schema, dbPath) {
 			db, err := sql.Open("sqlite3", dbPath)
 			if err != nil {
 				return nil, fmt.Errorf("failed to open existing database: %w", err)
@@ -29,25 +61,21 @@ func Open(schema, dbPath string) (*sql.DB, error) {
 		return Migrate(schema, dbPath)
 	}
 
-	// Ensure the directory for the database file exists
 	dbDir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
 
-	// Open the database (this will create it if it doesn't exist)
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Test the connection
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	// Execute the schema
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to execute schema: %w", err)
@@ -56,22 +84,95 @@ func Open(schema, dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
-// schemasEqual compares the provided schema with the existing database schema
-func schemasEqual(schema, dbPath string) bool {
-	// Open existing database
+// Migrate migrates an existing SQLite database at dbPath to the provided schema.
+// It creates a backup, migrates data for common columns, and atomically replaces the old database.
+// Returns a *sql.DB handle or an error.
+func Migrate(schema, dbPath string) (*sql.DB, error) {
+	backupPath := dbPath + ".backup"
+	if err := copyFile(dbPath, backupPath); err != nil {
+		return nil, fmt.Errorf("failed to create backup: %w", err)
+	}
+
+	newDbPath := dbPath + ".tmp"
+	db, err := MigrateToNewFile(schema, dbPath, newDbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to migrate to new file: %w", err)
+	}
+	db.Close()
+
+	if err := os.Rename(newDbPath, dbPath); err != nil {
+		return nil, fmt.Errorf("failed to rename new database: %w", err)
+	}
+	db, err = sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open migrated database: %w", err)
+	}
+
+	return db, nil
+}
+
+// MigrateToNewFile migrates an existing SQLite database at oldDbPath to the provided schema,
+// writing the result to newDbPath. It migrates data for common columns and tables.
+// Returns a *sql.DB handle to the new database or an error.
+func MigrateToNewFile(schema, oldDbPath string, newDbPath string) (*sql.DB, error) {
+	oldDB, err := sql.Open("sqlite3", oldDbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open existing database: %w", err)
+	}
+	defer oldDB.Close()
+
+	newDB, err := sql.Open("sqlite3", newDbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temporary database: %w", err)
+	}
+
+	if _, err := newDB.Exec(schema); err != nil {
+		newDB.Close()
+		os.Remove(newDbPath)
+		return nil, fmt.Errorf("failed to execute new schema: %w", err)
+	}
+
+	oldTables, err := GetTables(oldDB)
+	if err != nil {
+		newDB.Close()
+		os.Remove(newDbPath)
+		return nil, fmt.Errorf("failed to get tables from old database: %w", err)
+	}
+
+	newTables, err := GetTables(newDB)
+	if err != nil {
+		newDB.Close()
+		os.Remove(newDbPath)
+		return nil, fmt.Errorf("failed to get tables from new database: %w", err)
+	}
+
+	for _, tableName := range newTables {
+		if slices.Contains(oldTables, tableName) {
+			if err := MigrateTable(oldDB, newDB, tableName); err != nil {
+				newDB.Close()
+				os.Remove(newDbPath)
+				return nil, fmt.Errorf("failed to migrate table %s: %w", tableName, err)
+			}
+		}
+	}
+
+	return newDB, nil
+}
+
+// SchemasEqual compares the provided schema with the existing database schema at dbPath.
+// Returns true if the schemas are equivalent (same tables, columns, and properties).
+func SchemasEqual(schema, dbPath string) bool {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return false
 	}
 	defer db.Close()
 
-	// Get existing tables
-	existingTables, err := getTables(db)
+	existingTables, err := GetTables(db)
 	if err != nil {
 		return false
 	}
 
-	// Create temporary database with new schema
 	tempPath := dbPath + ".schema_check"
 	tempDB, err := sql.Open("sqlite3", tempPath)
 	if err != nil {
@@ -82,25 +183,21 @@ func schemasEqual(schema, dbPath string) bool {
 		os.Remove(tempPath)
 	}()
 
-	// Execute new schema on temporary database
 	if _, err := tempDB.Exec(schema); err != nil {
 		return false
 	}
 
-	// Get new tables
-	newTables, err := getTables(tempDB)
+	newTables, err := GetTables(tempDB)
 	if err != nil {
 		return false
 	}
 
-	// Check if table lists are identical
 	if !slices.Equal(existingTables, newTables) {
 		return false
 	}
 
-	// Compare each table's structure
 	for _, tableName := range existingTables {
-		if !tableStructuresEqual(db, tempDB, tableName) {
+		if !TableStructuresEqual(db, tempDB, tableName) {
 			return false
 		}
 	}
@@ -108,14 +205,15 @@ func schemasEqual(schema, dbPath string) bool {
 	return true
 }
 
-// tableStructuresEqual compares the structure of a table between two databases
-func tableStructuresEqual(db1, db2 *sql.DB, tableName string) bool {
-	columns1, err := getTableInfo(db1, tableName)
+// TableStructuresEqual compares the structure of a table between two databases.
+// Returns true if the columns and their properties are identical.
+func TableStructuresEqual(db1, db2 *sql.DB, tableName string) bool {
+	columns1, err := GetTableInfo(db1, tableName)
 	if err != nil {
 		return false
 	}
 
-	columns2, err := getTableInfo(db2, tableName)
+	columns2, err := GetTableInfo(db2, tableName)
 	if err != nil {
 		return false
 	}
@@ -134,8 +232,9 @@ func tableStructuresEqual(db1, db2 *sql.DB, tableName string) bool {
 	return true
 }
 
-// getTableInfo returns detailed table information as strings for comparison
-func getTableInfo(db *sql.DB, tableName string) ([]string, error) {
+// GetTableInfo returns detailed table information as strings for comparison.
+// Each string contains column name, type, nullability, default value, and primary key status.
+func GetTableInfo(db *sql.DB, tableName string) ([]string, error) {
 	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", tableName))
 	if err != nil {
 		return nil, err
@@ -150,99 +249,14 @@ func getTableInfo(db *sql.DB, tableName string) ([]string, error) {
 		if err := rows.Scan(&index, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
 			return nil, err
 		}
-
-		// Create a string representation of the column for comparison
-		colStr := fmt.Sprintf("%s:%s:%s:%s:%s",
-			name, typ, notNull,
-			defaultValue.String, pk.String)
+		colStr := fmt.Sprintf("%s:%s:%s:%s:%s", name, typ, notNull, defaultValue.String, pk.String)
 		columns = append(columns, colStr)
 	}
 	return columns, rows.Err()
 }
 
-func Migrate(schema, dbPath string) (*sql.DB, error) {
-	// Create a backup of the database
-	backupPath := dbPath + ".backup"
-	if err := copyFile(dbPath, backupPath); err != nil {
-		return nil, fmt.Errorf("failed to create backup: %w", err)
-	}
-
-	newDbPath := dbPath + ".tmp"
-
-	// Migrate to a new file
-	db, err := MigrateToNewFile(schema, dbPath, newDbPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to migrate to new file: %w", err)
-	}
-	db.Close()
-
-	// Replace old database with new one
-	if err := os.Rename(newDbPath, dbPath); err != nil {
-		return nil, fmt.Errorf("failed to rename new database: %w", err)
-	}
-
-	// Reopen the DB from the new path just in case SQLite cares about the exact path
-	db, err = sql.Open("sqlite3", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open migrated database: %w", err)
-	}
-
-	return db, nil
-}
-
-// Migrate handles the migration of an existing database to a new schema
-func MigrateToNewFile(schema, oldDbPath string, newDbPath string) (*sql.DB, error) {
-	// Open existing database
-	oldDB, err := sql.Open("sqlite3", oldDbPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open existing database: %w", err)
-	}
-	defer oldDB.Close()
-
-	// Create temporary database with new schema
-	newDB, err := sql.Open("sqlite3", newDbPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temporary database: %w", err)
-	}
-
-	// Execute new schema on temporary database
-	if _, err := newDB.Exec(schema); err != nil {
-		newDB.Close()
-		os.Remove(newDbPath)
-		return nil, fmt.Errorf("failed to execute new schema: %w", err)
-	}
-
-	// Get tables from both databases
-	oldTables, err := getTables(oldDB)
-	if err != nil {
-		newDB.Close()
-		os.Remove(newDbPath)
-		return nil, fmt.Errorf("failed to get tables from old database: %w", err)
-	}
-
-	newTables, err := getTables(newDB)
-	if err != nil {
-		newDB.Close()
-		os.Remove(newDbPath)
-		return nil, fmt.Errorf("failed to get tables from new database: %w", err)
-	}
-
-	// Migrate data for common tables
-	for _, tableName := range newTables {
-		if slices.Contains(oldTables, tableName) {
-			if err := migrateTable(oldDB, newDB, tableName); err != nil {
-				newDB.Close()
-				os.Remove(newDbPath)
-				return nil, fmt.Errorf("failed to migrate table %s: %w", tableName, err)
-			}
-		}
-	}
-
-	return newDB, nil
-}
-
-// getTables returns a list of table names in the database
-func getTables(db *sql.DB) ([]string, error) {
+// GetTables returns a list of table names in the database.
+func GetTables(db *sql.DB) ([]string, error) {
 	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type='table'")
 	if err != nil {
 		return nil, err
@@ -260,26 +274,24 @@ func getTables(db *sql.DB) ([]string, error) {
 	return tables, rows.Err()
 }
 
-// migrateTable migrates data from old table to new table
-func migrateTable(oldDB, newDB *sql.DB, tableName string) error {
-	// Get column information from both tables
-	oldColumns, err := getColumns(oldDB, tableName)
+// MigrateTable migrates data from old table to new table, copying only common columns.
+// Returns an error if migration fails.
+func MigrateTable(oldDB, newDB *sql.DB, tableName string) error {
+	oldColumns, err := GetColumns(oldDB, tableName)
 	if err != nil {
 		return err
 	}
 
-	newColumns, err := getColumns(newDB, tableName)
+	newColumns, err := GetColumns(newDB, tableName)
 	if err != nil {
 		return err
 	}
 
-	// Find common columns
-	commonColumns := findCommonColumns(oldColumns, newColumns)
+	commonColumns := FindCommonColumns(oldColumns, newColumns)
 	if len(commonColumns) == 0 {
 		return nil // No common columns, skip migration
 	}
 
-	// Build SELECT query for old table
 	selectQuery := fmt.Sprintf("SELECT %s FROM %s", strings.Join(commonColumns, ", "), tableName)
 	rows, err := oldDB.Query(selectQuery)
 	if err != nil {
@@ -287,7 +299,6 @@ func migrateTable(oldDB, newDB *sql.DB, tableName string) error {
 	}
 	defer rows.Close()
 
-	// Build INSERT query for new table
 	placeholders := make([]string, len(commonColumns))
 	for i := range placeholders {
 		placeholders[i] = "?"
@@ -295,7 +306,6 @@ func migrateTable(oldDB, newDB *sql.DB, tableName string) error {
 	insertQuery := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
 		tableName, strings.Join(commonColumns, ", "), strings.Join(placeholders, ", "))
 
-	// Migrate data row by row
 	tx, err := newDB.Begin()
 	if err != nil {
 		return err
@@ -329,8 +339,8 @@ func migrateTable(oldDB, newDB *sql.DB, tableName string) error {
 	return tx.Commit()
 }
 
-// getColumns returns a list of column names for a table
-func getColumns(db *sql.DB, tableName string) ([]string, error) {
+// GetColumns returns a list of column names for a table.
+func GetColumns(db *sql.DB, tableName string) ([]string, error) {
 	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", tableName))
 	if err != nil {
 		return nil, err
@@ -350,8 +360,8 @@ func getColumns(db *sql.DB, tableName string) ([]string, error) {
 	return columns, rows.Err()
 }
 
-// findCommonColumns returns columns that exist in both old and new tables
-func findCommonColumns(oldColumns, newColumns []string) []string {
+// FindCommonColumns returns columns that exist in both old and new tables.
+func FindCommonColumns(oldColumns, newColumns []string) []string {
 	oldSet := make(map[string]bool)
 	for _, col := range oldColumns {
 		oldSet[col] = true
@@ -366,7 +376,7 @@ func findCommonColumns(oldColumns, newColumns []string) []string {
 	return common
 }
 
-// copyFile copies a file from src to dst
+// copyFile copies a file from src to dst using io.Copy.
 func copyFile(src, dst string) error {
 	sourceFile, err := os.Open(src)
 	if err != nil {
