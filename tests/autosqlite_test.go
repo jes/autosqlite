@@ -627,25 +627,33 @@ func TestConcurrentMigration(t *testing.T) {
 func TestBackwardMigrationIssue(t *testing.T) {
 	dbPath := tempDBPath(t)
 
-	// Create database with newer schema (V2) - simulating a newer version of the app
-	db, err := autosqlite.Open(schemaV2, dbPath)
+	// Step 1: Create database with old schema (V1)
+	db, err := autosqlite.Open(schemaV1, dbPath)
 	if err != nil {
-		t.Fatalf("failed to create db with V2 schema: %v", err)
+		t.Fatalf("failed to create db with V1 schema: %v", err)
 	}
-	_, err = db.Exec("INSERT INTO users (name, email) VALUES ('alice', 'alice@example.com')")
+	_, err = db.Exec("INSERT INTO users (name) VALUES ('alice')")
 	if err != nil {
 		t.Fatalf("failed to insert data: %v", err)
 	}
 	db.Close()
 
-	// Simulate running an old version of the program with V1 schema
-	// This should NOT migrate backwards and should fail
+	// Step 2: Migrate to new schema (V2)
+	db, err = autosqlite.Open(schemaV2, dbPath)
+	if err != nil {
+		t.Fatalf("failed to migrate to V2 schema: %v", err)
+	}
+	_, err = db.Exec("UPDATE users SET email = 'alice@example.com' WHERE name = 'alice'")
+	if err != nil {
+		t.Fatalf("failed to update data: %v", err)
+	}
+	db.Close()
+
+	// Step 3: Attempt to migrate back to old schema (should be blocked)
 	_, err = autosqlite.Open(schemaV1, dbPath)
 	if err == nil {
 		t.Fatalf("backward migration should have been prevented")
 	}
-
-	// Check that the error message indicates backward migration was detected (before or after lock)
 	if !strings.Contains(err.Error(), "backward migration detected") {
 		t.Fatalf("expected backward migration error, got: %v", err)
 	}
@@ -725,7 +733,6 @@ func TestColumnTypeChange(t *testing.T) {
 	if name != "123" {
 		t.Fatalf("expected '123', got %s", name)
 	}
-	t.Logf("Column type change succeeded (SQLite is dynamically typed)")
 }
 
 // Edge case tests for schema compatibility issues (currently disabled - documenting limitations)

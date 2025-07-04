@@ -231,6 +231,41 @@ func MigrateToNewFile(schema, oldDbPath string, newDbPath string) (*sql.DB, erro
 		return nil, fmt.Errorf("failed to execute new schema: %w", err)
 	}
 
+	// Copy _autosqlite_version table if it exists
+	row := oldDB.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", versionTableName)
+	var tableName string
+	if err := row.Scan(&tableName); err == nil && tableName == versionTableName {
+		// Create the version table in the new DB
+		if err := createVersionTable(newDB); err != nil {
+			newDB.Close()
+			os.Remove(newDbPath)
+			return nil, fmt.Errorf("failed to create version table in new DB: %w", err)
+		}
+		// Copy all rows
+		rows, err := oldDB.Query("SELECT version, hash, timestamp, schema_sql FROM " + versionTableName)
+		if err != nil {
+			newDB.Close()
+			os.Remove(newDbPath)
+			return nil, fmt.Errorf("failed to query version table: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var version int
+			var hash, ts, schemaSQL string
+			if err := rows.Scan(&version, &hash, &ts, &schemaSQL); err != nil {
+				newDB.Close()
+				os.Remove(newDbPath)
+				return nil, fmt.Errorf("failed to scan version row: %w", err)
+			}
+			_, err := newDB.Exec("INSERT INTO "+versionTableName+" (version, hash, timestamp, schema_sql) VALUES (?, ?, ?, ?)", version, hash, ts, schemaSQL)
+			if err != nil {
+				newDB.Close()
+				os.Remove(newDbPath)
+				return nil, fmt.Errorf("failed to insert version row: %w", err)
+			}
+		}
+	}
+
 	oldTables, err := GetTables(oldDB)
 	if err != nil {
 		newDB.Close()
@@ -532,8 +567,8 @@ func getCurrentSchemaVersion(db *sql.DB) (*SchemaVersion, error) {
 		return nil, err
 	}
 
-	// Get current version
-	row = db.QueryRow("SELECT version, hash, timestamp FROM " + versionTableName + " ORDER BY timestamp DESC LIMIT 1")
+	// Get current version (order by version DESC, not timestamp)
+	row = db.QueryRow("SELECT version, hash, timestamp FROM " + versionTableName + " ORDER BY version DESC LIMIT 1")
 	var version SchemaVersion
 	if err := row.Scan(&version.Version, &version.Hash, &version.Timestamp); err != nil {
 		return nil, err
@@ -575,94 +610,25 @@ func isForwardMigration(db *sql.DB, newSchema string) (bool, error) {
 		return false, err
 	}
 
-	// If no version table exists, allow any migration (first time setup)
 	if currentVersion == nil {
 		return true, nil
 	}
 
 	newHash := calculateSchemaHash(newSchema)
 
-	// If hashes are identical, no migration needed
 	if currentVersion.Hash == newHash {
 		return true, nil
 	}
 
-	// Get current tables and columns
-	currentTables, err := GetTables(db)
-	if err != nil {
+	row := db.QueryRow("SELECT COUNT(*) FROM "+versionTableName+" WHERE hash = ?", newHash)
+	var count int
+	if err := row.Scan(&count); err != nil {
 		return false, err
 	}
 
-	// Create temporary DB to analyze new schema
-	tempPath := "temp_schema_check.db"
-	tempDB, err := sql.Open("sqlite3", tempPath)
-	if err != nil {
-		return false, err
-	}
-	defer func() {
-		tempDB.Close()
-		os.Remove(tempPath)
-	}()
-
-	if _, err := tempDB.Exec(newSchema); err != nil {
-		return false, err
-	}
-
-	newTables, err := GetTables(tempDB)
-	if err != nil {
-		return false, err
-	}
-
-	// Check if new schema has more tables
-	if len(newTables) > len(currentTables) {
-		return true, nil
-	}
-
-	// Check if new schema has more columns in existing tables
-	for _, tableName := range currentTables {
-		if slices.Contains(newTables, tableName) {
-			currentColumns, err := GetColumns(db, tableName)
-			if err != nil {
-				return false, err
-			}
-
-			newColumns, err := GetColumns(tempDB, tableName)
-			if err != nil {
-				return false, err
-			}
-
-			if len(newColumns) > len(currentColumns) {
-				return true, nil
-			}
-		}
-	}
-
-	// Check if new schema has fewer tables (potential backward migration)
-	if len(newTables) < len(currentTables) {
+	if count > 0 {
 		return false, nil
 	}
 
-	// Check if new schema has fewer columns in existing tables (potential backward migration)
-	for _, tableName := range currentTables {
-		if slices.Contains(newTables, tableName) {
-			currentColumns, err := GetColumns(db, tableName)
-			if err != nil {
-				return false, err
-			}
-
-			newColumns, err := GetColumns(tempDB, tableName)
-			if err != nil {
-				return false, err
-			}
-
-			if len(newColumns) < len(currentColumns) {
-				return false, nil
-			}
-		}
-	}
-
-	// If we get here, the schemas have the same number of tables and columns
-	// This could be a legitimate change (like changing column types, constraints, etc.)
-	// For now, we'll allow these changes as they don't remove data
 	return true, nil
 }
