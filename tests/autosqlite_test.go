@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jes/autosqlite"
@@ -87,7 +88,7 @@ func TestMigrationAddsColumn(t *testing.T) {
 func TestMigrationDeletesColumn(t *testing.T) {
 	dbPath := tempDBPath(t)
 	// Create v2 (with name column)
-	db, err := autosqlite.Open(schemaV2, dbPath)
+	db, err := autosqlite.OpenForTesting(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestMigrationDeletesColumn(t *testing.T) {
 	db.Close()
 
 	// Migrate to v2DropName (drops name column)
-	db2, err := autosqlite.Open(schemaV2DropName, dbPath)
+	db2, err := autosqlite.OpenForTesting(schemaV2DropName, dbPath)
 	if err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
@@ -157,7 +158,7 @@ func TestMigrationAddsTable(t *testing.T) {
 func TestMigrationDeletesTable(t *testing.T) {
 	dbPath := tempDBPath(t)
 	// Create v1WithPosts (users and posts)
-	db, err := autosqlite.Open(schemaV1WithPosts, dbPath)
+	db, err := autosqlite.OpenForTesting(schemaV1WithPosts, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -168,7 +169,7 @@ func TestMigrationDeletesTable(t *testing.T) {
 	db.Close()
 
 	// Migrate to v2DropPosts (drops posts table)
-	db2, err := autosqlite.Open(schemaV2DropPosts, dbPath)
+	db2, err := autosqlite.OpenForTesting(schemaV2DropPosts, dbPath)
 	if err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
@@ -613,6 +614,65 @@ func TestConcurrentMigration(t *testing.T) {
 		if !foundEmail {
 			t.Fatalf("[%d] email column not found after concurrent migration", iter)
 		}
+	}
+}
+
+func TestBackwardMigrationIssue(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Create database with newer schema (V2) - simulating a newer version of the app
+	db, err := autosqlite.Open(schemaV2, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db with V2 schema: %v", err)
+	}
+	_, err = db.Exec("INSERT INTO users (name, email) VALUES ('alice', 'alice@example.com')")
+	if err != nil {
+		t.Fatalf("failed to insert data: %v", err)
+	}
+	db.Close()
+
+	// Simulate running an old version of the program with V1 schema
+	// This should NOT migrate backwards and should fail
+	_, err = autosqlite.Open(schemaV1, dbPath)
+	if err == nil {
+		t.Fatalf("backward migration should have been prevented")
+	}
+
+	// Check that the error message indicates backward migration was detected
+	if !strings.Contains(err.Error(), "backward migration detected") {
+		t.Fatalf("expected backward migration error, got: %v", err)
+	}
+
+	// Verify the database is unchanged - open it directly with sql.Open
+	db2, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("failed to open db directly: %v", err)
+	}
+	defer db2.Close()
+
+	// Check that the email column still exists (should not have been dropped)
+	columns, err := autosqlite.GetColumns(db2, "users")
+	if err != nil {
+		t.Fatalf("GetColumns failed: %v", err)
+	}
+
+	foundEmail := false
+	for _, col := range columns {
+		if col == "email" {
+			foundEmail = true
+			break
+		}
+	}
+
+	if !foundEmail {
+		t.Fatalf("email column was dropped during backward migration - this should not happen!")
+	}
+
+	// Check that the data is still there
+	row := db2.QueryRow("SELECT name FROM users WHERE id=1")
+	var name string
+	if err := row.Scan(&name); err != nil || name != "alice" {
+		t.Fatalf("data not preserved: %v", err)
 	}
 }
 

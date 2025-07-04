@@ -33,7 +33,9 @@
 package autosqlite
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,6 +46,15 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// SchemaVersion represents the version information for a schema
+type SchemaVersion struct {
+	Version   int    // Numeric version (optional, for explicit versioning)
+	Hash      string // SHA256 hash of the schema
+	Timestamp string // When this version was applied
+}
+
+const versionTableName = "_autosqlite_version"
+
 // Open creates or migrates a SQLite database at dbPath using the provided schema SQL.
 // If the database does not exist, it is created. If it exists and the schema is unchanged,
 // the database is opened as-is. If the schema has changed, a migration is performed and
@@ -51,6 +62,72 @@ import (
 //
 // Returns a *sql.DB handle or an error.
 func Open(schema, dbPath string) (*sql.DB, error) {
+	if _, err := os.Stat(dbPath); err == nil {
+		if SchemasEqual(schema, dbPath) {
+			db, err := sql.Open("sqlite3", dbPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to open existing database: %w", err)
+			}
+			return db, nil
+		}
+
+		// Check if this would be a backward migration
+		db, err := sql.Open("sqlite3", dbPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open database for version check: %w", err)
+		}
+		defer db.Close()
+
+		isForward, err := isForwardMigration(db, schema)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check migration direction: %w", err)
+		}
+
+		if !isForward {
+			return nil, fmt.Errorf("backward migration detected: the new schema appears to remove tables or columns. This is not allowed to prevent data loss. If you need to downgrade, use a different approach")
+		}
+
+		return Migrate(schema, dbPath)
+	}
+
+	dbDir := filepath.Dir(dbPath)
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create database directory: %w", err)
+	}
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
+
+	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to execute schema: %w", err)
+	}
+
+	// Record the initial schema version
+	version := &SchemaVersion{
+		Version: 1,
+		Hash:    calculateSchemaHash(schema),
+	}
+
+	if err := recordSchemaVersion(db, version, schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to record schema version: %w", err)
+	}
+
+	return db, nil
+}
+
+// OpenForTesting creates or migrates a SQLite database at dbPath using the provided schema SQL.
+// This function bypasses backward migration protection and should only be used for testing.
+// Use Open() for production code.
+func OpenForTesting(schema, dbPath string) (*sql.DB, error) {
 	if _, err := os.Stat(dbPath); err == nil {
 		if SchemasEqual(schema, dbPath) {
 			db, err := sql.Open("sqlite3", dbPath)
@@ -80,6 +157,17 @@ func Open(schema, dbPath string) (*sql.DB, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to execute schema: %w", err)
+	}
+
+	// Record the initial schema version
+	version := &SchemaVersion{
+		Version: 1,
+		Hash:    calculateSchemaHash(schema),
+	}
+
+	if err := recordSchemaVersion(db, version, schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to record schema version: %w", err)
 	}
 
 	return db, nil
@@ -127,9 +215,29 @@ func Migrate(schema, dbPath string) (*sql.DB, error) {
 	if err := os.Rename(newDbPath, dbPath); err != nil {
 		return nil, fmt.Errorf("failed to rename new database: %w", err)
 	}
+
+	// Open the migrated database and record the new schema version
 	db, err = sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open migrated database: %w", err)
+	}
+
+	// Get current version to increment it
+	currentVersion, err := getCurrentSchemaVersion(db)
+	nextVersion := 1
+	if currentVersion != nil {
+		nextVersion = currentVersion.Version + 1
+	}
+
+	// Record the new schema version
+	version := &SchemaVersion{
+		Version: nextVersion,
+		Hash:    calculateSchemaHash(schema),
+	}
+
+	if err := recordSchemaVersion(db, version, schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to record schema version: %w", err)
 	}
 
 	return db, nil
@@ -417,4 +525,175 @@ func copyFile(src, dst string) error {
 
 	_, err = destFile.ReadFrom(sourceFile)
 	return err
+}
+
+// calculateSchemaHash returns a SHA256 hash of the normalized schema
+func calculateSchemaHash(schema string) string {
+	// Normalize schema by removing comments and extra whitespace
+	normalized := normalizeSchema(schema)
+	hash := sha256.Sum256([]byte(normalized))
+	return hex.EncodeToString(hash[:])
+}
+
+// normalizeSchema removes comments and normalizes whitespace for consistent hashing
+func normalizeSchema(schema string) string {
+	lines := strings.Split(schema, "\n")
+	var normalized []string
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "--") {
+			continue
+		}
+		normalized = append(normalized, line)
+	}
+
+	return strings.Join(normalized, " ")
+}
+
+// getCurrentSchemaVersion retrieves the current schema version from the database
+func getCurrentSchemaVersion(db *sql.DB) (*SchemaVersion, error) {
+	// Check if version table exists
+	row := db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", versionTableName)
+	var tableName string
+	if err := row.Scan(&tableName); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil // No version table means no version tracking
+		}
+		return nil, err
+	}
+
+	// Get current version
+	row = db.QueryRow("SELECT version, hash, timestamp FROM " + versionTableName + " ORDER BY timestamp DESC LIMIT 1")
+	var version SchemaVersion
+	if err := row.Scan(&version.Version, &version.Hash, &version.Timestamp); err != nil {
+		return nil, err
+	}
+
+	return &version, nil
+}
+
+// createVersionTable creates the version tracking table
+func createVersionTable(db *sql.DB) error {
+	createTableSQL := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s (
+			version INTEGER,
+			hash TEXT NOT NULL,
+			timestamp TEXT NOT NULL,
+			schema_sql TEXT
+		)`, versionTableName)
+
+	_, err := db.Exec(createTableSQL)
+	return err
+}
+
+// recordSchemaVersion records the current schema version in the database
+func recordSchemaVersion(db *sql.DB, version *SchemaVersion, schemaSQL string) error {
+	if err := createVersionTable(db); err != nil {
+		return err
+	}
+
+	insertSQL := fmt.Sprintf("INSERT INTO %s (version, hash, timestamp, schema_sql) VALUES (?, ?, datetime('now'), ?)", versionTableName)
+	_, err := db.Exec(insertSQL, version.Version, version.Hash, schemaSQL)
+	return err
+}
+
+// isForwardMigration checks if the new schema represents a forward migration
+// Returns true if migration is allowed, false if it would be a backward migration
+func isForwardMigration(db *sql.DB, newSchema string) (bool, error) {
+	currentVersion, err := getCurrentSchemaVersion(db)
+	if err != nil {
+		return false, err
+	}
+
+	// If no version table exists, allow any migration (first time setup)
+	if currentVersion == nil {
+		return true, nil
+	}
+
+	newHash := calculateSchemaHash(newSchema)
+
+	// If hashes are identical, no migration needed
+	if currentVersion.Hash == newHash {
+		return true, nil
+	}
+
+	// Get current tables and columns
+	currentTables, err := GetTables(db)
+	if err != nil {
+		return false, err
+	}
+
+	// Create temporary DB to analyze new schema
+	tempPath := "temp_schema_check.db"
+	tempDB, err := sql.Open("sqlite3", tempPath)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		tempDB.Close()
+		os.Remove(tempPath)
+	}()
+
+	if _, err := tempDB.Exec(newSchema); err != nil {
+		return false, err
+	}
+
+	newTables, err := GetTables(tempDB)
+	if err != nil {
+		return false, err
+	}
+
+	// Check if new schema has more tables
+	if len(newTables) > len(currentTables) {
+		return true, nil
+	}
+
+	// Check if new schema has more columns in existing tables
+	for _, tableName := range currentTables {
+		if slices.Contains(newTables, tableName) {
+			currentColumns, err := GetColumns(db, tableName)
+			if err != nil {
+				return false, err
+			}
+
+			newColumns, err := GetColumns(tempDB, tableName)
+			if err != nil {
+				return false, err
+			}
+
+			if len(newColumns) > len(currentColumns) {
+				return true, nil
+			}
+		}
+	}
+
+	// Check if new schema has fewer tables (potential backward migration)
+	if len(newTables) < len(currentTables) {
+		return false, nil
+	}
+
+	// Check if new schema has fewer columns in existing tables (potential backward migration)
+	for _, tableName := range currentTables {
+		if slices.Contains(newTables, tableName) {
+			currentColumns, err := GetColumns(db, tableName)
+			if err != nil {
+				return false, err
+			}
+
+			newColumns, err := GetColumns(tempDB, tableName)
+			if err != nil {
+				return false, err
+			}
+
+			if len(newColumns) < len(currentColumns) {
+				return false, nil
+			}
+		}
+	}
+
+	// If we get here, the schemas have the same number of tables and columns
+	// This could be a legitimate change (like changing column types, constraints, etc.)
+	// For now, we'll allow these changes as they don't remove data
+	return true, nil
 }
