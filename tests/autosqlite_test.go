@@ -2,6 +2,7 @@ package tests
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -213,6 +214,317 @@ func TestIdenticalSchemaSkipMigration(t *testing.T) {
 	backupPath := dbPath + ".backup"
 	if _, err := os.Stat(backupPath); err == nil {
 		t.Fatalf("backup file was created unnecessarily")
+	}
+}
+
+// Direct function tests
+func TestMigrateFunction(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Create initial database
+	db, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	_, err = db.Exec("INSERT INTO users (name) VALUES ('test')")
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+	db.Close()
+
+	// Test Migrate function directly
+	db2, err := autosqlite.Migrate(schemaV2, dbPath)
+	if err != nil {
+		t.Fatalf("migrate failed: %v", err)
+	}
+	defer db2.Close()
+
+	// Verify migration worked
+	row := db2.QueryRow("SELECT name FROM users WHERE id=1")
+	var name string
+	if err := row.Scan(&name); err != nil || name != "test" {
+		t.Fatalf("data not preserved after migration: %v", err)
+	}
+
+	// Check backup was created
+	backupPath := dbPath + ".backup"
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("backup file not created: %v", err)
+	}
+}
+
+func TestMigrateToNewFile(t *testing.T) {
+	oldDbPath := tempDBPath(t)
+	newDbPath := tempDBPath(t) + ".new"
+
+	// Create initial database
+	db, err := autosqlite.Open(schemaV1, oldDbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	_, err = db.Exec("INSERT INTO users (name) VALUES ('test')")
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+	db.Close()
+
+	// Test MigrateToNewFile function
+	db2, err := autosqlite.MigrateToNewFile(schemaV2, oldDbPath, newDbPath)
+	if err != nil {
+		t.Fatalf("migrate to new file failed: %v", err)
+	}
+	defer db2.Close()
+
+	// Verify new database has migrated data
+	row := db2.QueryRow("SELECT name FROM users WHERE id=1")
+	var name string
+	if err := row.Scan(&name); err != nil || name != "test" {
+		t.Fatalf("data not preserved in new file: %v", err)
+	}
+
+	// Verify old database still exists and unchanged
+	db3, err := sql.Open("sqlite3", oldDbPath)
+	if err != nil {
+		t.Fatalf("failed to open old db: %v", err)
+	}
+	defer db3.Close()
+
+	row = db3.QueryRow("SELECT name FROM users WHERE id=1")
+	if err := row.Scan(&name); err != nil || name != "test" {
+		t.Fatalf("old database was modified: %v", err)
+	}
+}
+
+func TestSchemasEqual(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Create database with schemaV1
+	db, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	db.Close()
+
+	// Test identical schema
+	if !autosqlite.SchemasEqual(schemaV1, dbPath) {
+		t.Fatalf("identical schemas should be equal")
+	}
+
+	// Test different schema
+	if autosqlite.SchemasEqual(schemaV2, dbPath) {
+		t.Fatalf("different schemas should not be equal")
+	}
+}
+
+// Utility function tests
+func TestGetTables(t *testing.T) {
+	dbPath := tempDBPath(t)
+	db, err := autosqlite.Open(schemaV1WithPosts, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	tables, err := autosqlite.GetTables(db)
+	if err != nil {
+		t.Fatalf("GetTables failed: %v", err)
+	}
+
+	if len(tables) != 2 {
+		t.Fatalf("expected 2 tables, got %d", len(tables))
+	}
+
+	expected := []string{"users", "posts"}
+	for _, table := range expected {
+		found := false
+		for _, t := range tables {
+			if t == table {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("table %s not found", table)
+		}
+	}
+}
+
+func TestGetColumns(t *testing.T) {
+	dbPath := tempDBPath(t)
+	db, err := autosqlite.Open(schemaV2, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	defer db.Close()
+
+	columns, err := autosqlite.GetColumns(db, "users")
+	if err != nil {
+		t.Fatalf("GetColumns failed: %v", err)
+	}
+
+	expected := []string{"id", "name", "email"}
+	if len(columns) != len(expected) {
+		t.Fatalf("expected %d columns, got %d", len(expected), len(columns))
+	}
+
+	for _, col := range expected {
+		found := false
+		for _, c := range columns {
+			if c == col {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("column %s not found", col)
+		}
+	}
+}
+
+func TestFindCommonColumns(t *testing.T) {
+	oldCols := []string{"id", "name", "email"}
+	newCols := []string{"id", "name", "phone"}
+
+	common := autosqlite.FindCommonColumns(oldCols, newCols)
+	expected := []string{"id", "name"}
+
+	if len(common) != len(expected) {
+		t.Fatalf("expected %d common columns, got %d", len(expected), len(common))
+	}
+
+	for _, col := range expected {
+		found := false
+		for _, c := range common {
+			if c == col {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("common column %s not found", col)
+		}
+	}
+}
+
+// Error case tests
+func TestInvalidSchema(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Test with invalid SQL
+	_, err := autosqlite.Open("INVALID SQL", dbPath)
+	if err == nil {
+		t.Fatalf("should fail with invalid SQL")
+	}
+}
+
+func TestEmptySchema(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Test with empty schema - should create an empty database
+	db, err := autosqlite.Open("", dbPath)
+	if err != nil {
+		t.Fatalf("empty schema should create empty database: %v", err)
+	}
+	defer db.Close()
+
+	// Verify database was created but has no tables
+	tables, err := autosqlite.GetTables(db)
+	if err != nil {
+		t.Fatalf("GetTables failed: %v", err)
+	}
+
+	if len(tables) != 0 {
+		t.Fatalf("empty schema should create database with no tables, got %d tables", len(tables))
+	}
+}
+
+func TestNonExistentDatabasePath(t *testing.T) {
+	// Test with non-existent database path
+	_, err := autosqlite.Open(schemaV1, "/non/existent/path/db.sqlite")
+	if err == nil {
+		t.Fatalf("should fail with non-existent path")
+	}
+}
+
+func TestSchemasEqualWithNonExistentDB(t *testing.T) {
+	// Test SchemasEqual with non-existent database
+	if autosqlite.SchemasEqual(schemaV1, "/non/existent/db.sqlite") {
+		t.Fatalf("should return false for non-existent database")
+	}
+}
+
+// Edge case tests
+func TestComplexSchema(t *testing.T) {
+	complexSchema := `
+	CREATE TABLE users (
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		email TEXT UNIQUE,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE TABLE posts (
+		id INTEGER PRIMARY KEY,
+		user_id INTEGER NOT NULL,
+		title TEXT NOT NULL,
+		content TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (user_id) REFERENCES users(id)
+	);
+	CREATE INDEX idx_posts_user_id ON posts(user_id);
+	`
+
+	dbPath := tempDBPath(t)
+	db, err := autosqlite.Open(complexSchema, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db with complex schema: %v", err)
+	}
+	defer db.Close()
+
+	// Verify tables were created
+	tables, err := autosqlite.GetTables(db)
+	if err != nil {
+		t.Fatalf("GetTables failed: %v", err)
+	}
+
+	if len(tables) != 2 {
+		t.Fatalf("expected 2 tables, got %d", len(tables))
+	}
+}
+
+func TestLargeDatasetMigration(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Create database with data
+	db, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+
+	// Insert many rows
+	for i := 0; i < 1000; i++ {
+		_, err = db.Exec("INSERT INTO users (name) VALUES (?)", fmt.Sprintf("user%d", i))
+		if err != nil {
+			t.Fatalf("failed to insert row %d: %v", i, err)
+		}
+	}
+	db.Close()
+
+	// Migrate to new schema
+	db2, err := autosqlite.Open(schemaV2, dbPath)
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	defer db2.Close()
+
+	// Verify all data was migrated
+	var count int
+	row := db2.QueryRow("SELECT COUNT(*) FROM users")
+	if err := row.Scan(&count); err != nil {
+		t.Fatalf("failed to count rows: %v", err)
+	}
+
+	if count != 1000 {
+		t.Fatalf("expected 1000 rows, got %d", count)
 	}
 }
 
