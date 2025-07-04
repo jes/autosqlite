@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -92,7 +93,7 @@ func migrateDatabase(schema, dbPath string) (*sql.DB, error) {
 
 	// Migrate data for common tables
 	for _, tableName := range newTables {
-		if contains(oldTables, tableName) {
+		if slices.Contains(oldTables, tableName) {
 			if err := migrateTable(oldDB, tempDB, tableName); err != nil {
 				tempDB.Close()
 				os.Remove(tempPath)
@@ -248,16 +249,6 @@ func findCommonColumns(oldColumns, newColumns []string) []string {
 		}
 	}
 	return common
-}
-
-// contains checks if a slice contains a string
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }
 
 // copyFile copies a file from src to dst
