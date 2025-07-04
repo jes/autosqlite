@@ -547,6 +547,17 @@ func TestConcurrentMigration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("[%d] failed to insert: %v", iter, err)
 		}
+
+		// Check that the 'email' column does NOT exist before migration
+		columns, err := autosqlite.GetColumns(db, "users")
+		if err != nil {
+			t.Fatalf("[%d] GetColumns failed before migration: %v", iter, err)
+		}
+		for _, col := range columns {
+			if col == "email" {
+				t.Fatalf("[%d] email column should not exist before migration", iter)
+			}
+		}
 		db.Close()
 
 		start := make(chan struct{})
@@ -585,6 +596,22 @@ func TestConcurrentMigration(t *testing.T) {
 		var name string
 		if err := row.Scan(&name); err != nil || name != "concurrent" {
 			t.Fatalf("[%d] data not preserved after concurrent migration: %v", iter, err)
+		}
+
+		// Check that the 'email' column exists
+		columns, err = autosqlite.GetColumns(db2, "users")
+		if err != nil {
+			t.Fatalf("[%d] GetColumns failed: %v", iter, err)
+		}
+		foundEmail := false
+		for _, col := range columns {
+			if col == "email" {
+				foundEmail = true
+				break
+			}
+		}
+		if !foundEmail {
+			t.Fatalf("[%d] email column not found after concurrent migration", iter)
 		}
 	}
 }
