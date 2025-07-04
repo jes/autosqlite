@@ -9,10 +9,10 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// CreateDBFromSchema creates a new SQLite database from a schema file.
+// Open creates a new SQLite database from a schema file.
 // If the database file already exists, it returns an error.
 // If the database doesn't exist, it creates it using the provided schema.
-func CreateDBFromSchema(schemaPath, dbPath string) (*sql.DB, error) {
+func Open(schema, dbPath string) (*sql.DB, error) {
 	// Check if database already exists
 	if _, err := os.Stat(dbPath); err == nil {
 		return nil, fmt.Errorf("database file already exists: %s", dbPath)
@@ -22,12 +22,6 @@ func CreateDBFromSchema(schemaPath, dbPath string) (*sql.DB, error) {
 	dbDir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
-	}
-
-	// Read the schema file
-	schemaContent, err := os.ReadFile(schemaPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read schema file: %w", err)
 	}
 
 	// Open the database (this will create it if it doesn't exist)
@@ -43,7 +37,7 @@ func CreateDBFromSchema(schemaPath, dbPath string) (*sql.DB, error) {
 	}
 
 	// Execute the schema
-	if _, err := db.Exec(string(schemaContent)); err != nil {
+	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to execute schema: %w", err)
 	}
