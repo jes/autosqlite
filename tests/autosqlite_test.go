@@ -994,6 +994,90 @@ func TestTriggerMigration(t *testing.T) {
 	}
 }
 
+func TestQueryParametersHandling(t *testing.T) {
+	// Test that query parameters in database paths are handled correctly
+	dbPathWithParams := tempDBPath(t) + "?_busy_timeout=1000&_journal_mode=WAL"
+
+	// Create database with query parameters
+	db, err := autosqlite.Open(schemaV1, dbPathWithParams)
+	if err != nil {
+		t.Fatalf("failed to create db with query parameters: %v", err)
+	}
+	defer db.Close()
+
+	// Verify the database was created (check the filename without query params)
+	filename := strings.Split(dbPathWithParams, "?")[0]
+	if _, err := os.Stat(filename); err != nil {
+		t.Fatalf("database file not created: %v", err)
+	}
+
+	// Insert some data
+	_, err = db.Exec("INSERT INTO users (name) VALUES ('test')")
+	if err != nil {
+		t.Fatalf("failed to insert data: %v", err)
+	}
+
+	// Close and reopen with same query parameters
+	db.Close()
+	db2, err := autosqlite.Open(schemaV1, dbPathWithParams)
+	if err != nil {
+		t.Fatalf("failed to reopen db with query parameters: %v", err)
+	}
+	defer db2.Close()
+
+	// Verify data is preserved
+	row := db2.QueryRow("SELECT name FROM users WHERE id=1")
+	var name string
+	if err := row.Scan(&name); err != nil || name != "test" {
+		t.Fatalf("data not preserved: %v", err)
+	}
+
+	// Test migration with query parameters
+	db2.Close()
+	db3, err := autosqlite.Open(schemaV2, dbPathWithParams)
+	if err != nil {
+		t.Fatalf("migration with query parameters failed: %v", err)
+	}
+	defer db3.Close()
+
+	// Verify migration worked and data is preserved
+	row = db3.QueryRow("SELECT name FROM users WHERE id=1")
+	if err := row.Scan(&name); err != nil || name != "test" {
+		t.Fatalf("data not preserved after migration: %v", err)
+	}
+
+	// Verify backup was created (should be filename without query params)
+	backupPath := filename + ".backup"
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("backup file not created: %v", err)
+	}
+
+	// Clean up backup
+	os.Remove(backupPath)
+}
+
+func TestMemoryDatabaseHandling(t *testing.T) {
+	// Test that :memory: databases are handled correctly
+	db, err := autosqlite.Open(schemaV1, ":memory:")
+	if err != nil {
+		t.Fatalf("failed to create in-memory db: %v", err)
+	}
+	defer db.Close()
+
+	// Insert some data
+	_, err = db.Exec("INSERT INTO users (name) VALUES ('memory_test')")
+	if err != nil {
+		t.Fatalf("failed to insert data: %v", err)
+	}
+
+	// Verify data exists
+	row := db.QueryRow("SELECT name FROM users WHERE id=1")
+	var name string
+	if err := row.Scan(&name); err != nil || name != "memory_test" {
+		t.Fatalf("data not found in memory db: %v", err)
+	}
+}
+
 func tempDBPath(t *testing.T) string {
 	dir := t.TempDir()
 	return filepath.Join(dir, "test.db")

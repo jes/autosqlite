@@ -1,5 +1,10 @@
 # Edge Cases and Potential Issues
 
+## ✅ RESOLVED
+
+### SQLite Connection String Handling
+- ✅ Query parameters in database paths - **RESOLVED**: Added `extractFilenameFromConnectionString()` function to handle connection strings like "foo.db?_busy_timeout=1000", extracting only the filename for file operations while preserving the full string for database connections
+
 ## ⚠️ PARTIALLY ADDRESSED
 
 ### Data Type Compatibility
@@ -46,3 +51,11 @@
 - Schema versioning provides a foundation for more advanced features
 - File locking ensures thread safety for concurrent access scenarios
 - The migration approach (backup → new DB → migrate data → atomic replace) is robust and safe 
+
+# from jes
+
+ - ✅ we don't handle "query params" in the db name, mattn/go-sqlite3 let's you sql.Open("sqlite3", "foo.db?_busy_timeout=1000"), we should keep hold of the query string but treat only "foo.db" as the filename - **RESOLVED**
+ - document that we mis-handle column/table renames
+ - os.Remove(lockPath) is called unconditionally after unlock; consider deferring only on successful lock acquisition to avoid removing another process's lock file in some edge cases.
+ - a ":memory:" database is apparently meant to be shared? so doesn't create a new db, need to make a temporary one on disk
+ - make temporary files with better filenames maybe

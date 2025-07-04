@@ -56,14 +56,39 @@ type SchemaVersion struct {
 
 const versionTableName = "_autosqlite_version"
 
+// extractFilenameFromConnectionString extracts the filename part from a SQLite connection string,
+// removing any query parameters. For example, "foo.db?_busy_timeout=1000" becomes "foo.db".
+func extractFilenameFromConnectionString(connectionString string) string {
+	// Handle special cases
+	if connectionString == ":memory:" {
+		return ":memory:"
+	}
+	if connectionString == ":temp:" || connectionString == ":temporary:" {
+		return connectionString
+	}
+
+	// Find the first '?' which indicates query parameters
+	if idx := strings.IndexByte(connectionString, '?'); idx != -1 {
+		return connectionString[:idx]
+	}
+
+	return connectionString
+}
+
 // Open creates or migrates a SQLite database at dbPath using the provided schema SQL.
 // If the database does not exist, it is created. If it exists and the schema is unchanged,
 // the database is opened as-is. If the schema has changed, a migration is performed and
 // the previous database file is backed up with a ".backup" extension.
 //
+// The dbPath parameter can include SQLite query parameters (e.g., "foo.db?_busy_timeout=1000").
+// File operations will use only the filename part, while database connections will use the full string.
+//
 // Returns a *sql.DB handle or an error.
 func Open(schema, dbPath string) (*sql.DB, error) {
-	if _, err := os.Stat(dbPath); err == nil {
+	// Extract filename for file operations
+	filename := extractFilenameFromConnectionString(dbPath)
+
+	if _, err := os.Stat(filename); err == nil {
 		if SchemasEqual(schema, dbPath) {
 			db, err := sql.Open("sqlite3", dbPath)
 			if err != nil {
@@ -91,7 +116,7 @@ func Open(schema, dbPath string) (*sql.DB, error) {
 		return Migrate(schema, dbPath)
 	}
 
-	dbDir := filepath.Dir(dbPath)
+	dbDir := filepath.Dir(filename)
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
@@ -129,13 +154,19 @@ func Open(schema, dbPath string) (*sql.DB, error) {
 // It creates a backup with a ".backup" extension, migrates data for common columns,
 // and atomically replaces the old database.
 //
+// The dbPath parameter can include SQLite query parameters (e.g., "foo.db?_busy_timeout=1000").
+// File operations will use only the filename part, while database connections will use the full string.
+//
 // Returns a *sql.DB handle or an error.
 func Migrate(schema, dbPath string) (*sql.DB, error) {
-	backupPath := dbPath + ".backup"
-	newDbPath := dbPath + ".tmp"
+	// Extract filename for file operations
+	filename := extractFilenameFromConnectionString(dbPath)
+
+	backupPath := filename + ".backup"
+	newDbPath := filename + ".tmp"
 
 	// Lock using the database path, not the tmp path
-	lockPath := dbPath + ".migration.lock"
+	lockPath := filename + ".migration.lock"
 	tmpLock := flock.New(lockPath)
 	if err := tmpLock.Lock(); err != nil {
 		return nil, fmt.Errorf("failed to acquire migration lock: %w", err)
@@ -168,7 +199,7 @@ func Migrate(schema, dbPath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("backward migration detected after lock: this is not allowed to prevent data loss. If you need to downgrade, clear out the _autosqlite_version table")
 	}
 
-	if err := copyFile(dbPath, backupPath); err != nil {
+	if err := copyFile(filename, backupPath); err != nil {
 		return nil, fmt.Errorf("failed to create backup: %w", err)
 	}
 
@@ -178,7 +209,7 @@ func Migrate(schema, dbPath string) (*sql.DB, error) {
 	}
 	db.Close()
 
-	if err := os.Rename(newDbPath, dbPath); err != nil {
+	if err := os.Rename(newDbPath, filename); err != nil {
 		return nil, fmt.Errorf("failed to rename new database: %w", err)
 	}
 
