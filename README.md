@@ -18,6 +18,57 @@ A Go module for creating SQLite databases from schema files.
 go get github.com/jes/autosqlite
 ```
 
+## CLI Tool
+
+AutoSQLite includes a command-line tool for database management.
+
+### Installing the CLI Tool
+
+**Option 1: Install globally (recommended)**
+```bash
+go install github.com/jes/autosqlite/cmd/autosqlite@latest
+```
+
+**Option 2: Add as a project tool**
+```bash
+go get -tool github.com/jes/autosqlite/cmd/autosqlite
+```
+Then run with: `go tool autosqlite`
+
+**Option 3: Build locally**
+```bash
+git clone https://github.com/jes/autosqlite.git
+cd autosqlite
+go build -o autosqlite cmd/autosqlite/main.go
+```
+
+### CLI Usage
+
+```bash
+# Validate a schema file
+autosqlite -validate -schema schema.sql
+
+# Test migration without applying changes
+autosqlite -dry-run -schema schema.sql -db app.db
+
+# Migrate database in place (creates backup)
+autosqlite -schema schema.sql -db app.db -in-place
+
+# Create new database with migrated schema
+autosqlite -schema schema.sql -db app.db -new-db app_v2.db
+
+# Add verbose output to any command
+autosqlite -schema schema.sql -db app.db -in-place -verbose
+```
+
+### CLI Commands
+
+- `-validate -schema <file>` - Validate schema syntax
+- `-dry-run -schema <file> -db <file>` - Test migration without applying
+- `-schema <file> -db <file> -in-place` - Migrate database in place
+- `-schema <file> -db <file> -new-db <file>` - Create new database with migrated schema
+- `-verbose` - Show detailed tool mation
+
 ## Usage
 
 ```go
