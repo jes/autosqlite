@@ -307,15 +307,12 @@ func SchemasEqual(schema, dbPath string) bool {
 		return false
 	}
 
-	tempPath := dbPath + ".schema_check"
-	tempDB, err := sql.Open("sqlite3", tempPath)
+	// Use in-memory database for temporary schema comparison
+	tempDB, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		return false
 	}
-	defer func() {
-		tempDB.Close()
-		os.Remove(tempPath)
-	}()
+	defer tempDB.Close()
 
 	// Always create the _autosqlite_version table in the temp DB
 	if err := createVersionTable(tempDB); err != nil {
