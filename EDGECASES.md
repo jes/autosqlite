@@ -15,8 +15,7 @@
 ## Schema Dependencies
 - Foreign key relationships require specific migration order - No dependency analysis or ordering
 - Circular dependencies between tables - No detection or handling of circular dependencies
-- Views, triggers, and custom functions not preserved - Only handles tables and columns
-- Indexes need to be recreated - Indexes are not preserved during migration
+- Schema objects must be defined in schema file - Indexes, views, triggers, and custom functions are recreated from the new schema. Any that existed in the old database but aren't in the new schema will be lost.
 
 ## SQLite-Specific Issues
 - SQLite version compatibility between old and new schemas
@@ -34,7 +33,7 @@
 2. Dry-Run Mode - Add a flag to simulate migrations without making changes
 3. Progress Reporting - Add progress indicators for large dataset migrations
 4. Constraint Validation - Add validation for NOT NULL and UNIQUE constraints before migration
-5. Index Preservation - Preserve and recreate indexes during migration
+5. Schema Object Preservation - Add logic to detect and preserve indexes, views, and triggers that exist in old database but not in new schema
 6. Foreign Key Validation - Validate foreign key relationships before applying constraints
 7. Column/Table Rename Detection - Add logic to detect and handle renamed columns and tables
 

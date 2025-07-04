@@ -1,26 +1,49 @@
-# AutoSQLite
+# Autosqlite
 
-A Go module for creating SQLite databases from schema files.
-
-## Features
+A Go module for creating SQLite databases from schema files and automatically
+handling migrations when the schema changes.
 
 - Creates SQLite databases from SQL schema strings
-- Automatic schema migration with data preservation
+- Automatic schema migration
 - Returns a `*sql.DB` handle for immediate use
-- Efficient: skips migration if schema is unchanged
-- Automatically creates necessary directories
+- Skips migration if schema is unchanged
+- Avoids backwards migrations
 - Creates backups before migration
 - Uses the `mattn/go-sqlite3` driver
 
-## Installation
+When a schema change is found, Autosqlite creates a database from the new schema,
+and copies all of the data from the old database where table and column names are
+equal, and then renames the new database on top of the old one.
 
-```bash
-go get github.com/jes/autosqlite
-```
+## Caveats
+
+Schema migration might not do the right thing in some circumstances:
+
+ - Renaming a column or table is indistinguishable from deleting the old one
+   and adding a new one, so data loss is guaranteed if you rename columns or
+   tables
+ - If another program has the old database file open while you try to migrate
+   it, you might lose data
+ - If you use foreign key constraints, Autosqlite won't necessarily
+   re-populate the tables in the right order, leading to migration failures
+
+## Recommended usage
+
+Use Autosqlite to save yourself time while developing a new application. **DON'T**
+attempt to use Autosqlite to handle important data. For handling important data
+you should use a more robust method to deploy database schema migrations.
+
+If you do want to use Autosqlite to handle schema migrations automatically, the
+safest way is to use the CLI tool, and manually run it every time you need to
+update the schema.
+
+The more dangerous, but more convenient, way is to embed the schema into your
+program using `go:embed` and use `autosqlite.Open()` to open the database. It
+will automatically migrate the schema whenever a new version is found.
 
 ## CLI Tool
 
-AutoSQLite includes a command-line tool for database management.
+Autosqlite includes a command-line tool for database management.
 
 ### Installing the CLI Tool
 
@@ -69,7 +92,13 @@ autosqlite -schema schema.sql -db app.db -in-place -verbose
 - `-schema <file> -db <file> -new-db <file>` - Create new database with migrated schema
 - `-verbose` - Show detailed tool mation
 
-## Usage
+## Package Usage
+
+```bash
+go get github.com/jes/autosqlite
+```
+
+Put your schema in `schema.sql` and embed it in a string in your program:
 
 ```go
 package main
