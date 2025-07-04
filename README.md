@@ -26,6 +26,8 @@ Schema migration might not do the right thing in some circumstances:
    it, you might lose data
  - If you use foreign key constraints, Autosqlite won't necessarily
    re-populate the tables in the right order, leading to migration failures
+ - If you introduce for example a `NOT NULL` constraint on a column that
+   previously had `NULL` values then migration will fail
 
 ## Recommended usage
 
