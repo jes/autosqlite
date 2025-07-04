@@ -67,6 +67,37 @@ func extractFilenameFromConnectionString(connectionString string) string {
 	return connectionString
 }
 
+// openTemporaryDB creates a temporary SQLite database file, immediately unlinks it,
+// and returns a database handle. This ensures all connections to the same handle
+// share the same database, unlike :memory: which creates separate databases per connection.
+func openTemporaryDB() (*sql.DB, error) {
+	// Create a temporary file
+	tmpFile, err := os.CreateTemp("", "autosqlite_*.db")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temporary file: %w", err)
+	}
+
+	// Close the file handle so SQLite can use it
+	tmpFile.Close()
+
+	// Get the file path
+	tmpPath := tmpFile.Name()
+
+	// Open the database using the unlinked file
+	db, err := sql.Open("sqlite3", tmpPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open temporary database: %w", err)
+	}
+
+	// Immediately unlink the file so it gets cleaned up when the process exits
+	// SQLite will still be able to use it as long as we keep the handle open
+	if err := os.Remove(tmpPath); err != nil {
+		return nil, fmt.Errorf("failed to unlink temporary file: %w", err)
+	}
+
+	return db, nil
+}
+
 // Open creates or migrates a SQLite database at dbPath using the provided schema SQL.
 // If the database does not exist, it is created. If it exists and the schema is unchanged,
 // the database is opened as-is. If the schema has changed, a migration is performed and
@@ -330,8 +361,7 @@ func SchemasEqual(schema, dbPath string) bool {
 		return false
 	}
 
-	// Use in-memory database for temporary schema comparison
-	tempDB, err := sql.Open("sqlite3", ":memory:")
+	tempDB, err := openTemporaryDB()
 	if err != nil {
 		return false
 	}
