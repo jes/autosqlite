@@ -683,6 +683,265 @@ func TestBackwardMigrationIssue(t *testing.T) {
 	}
 }
 
+func TestColumnTypeChange(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Create database with TEXT column
+	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`
+	db, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	_, err = db.Exec("INSERT INTO users (name) VALUES ('123'), ('abc')")
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+	db.Close()
+
+	// Change column type to INTEGER (SQLite is dynamically typed, so this works fine)
+	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name INTEGER);`
+	db2, err := autosqlite.Open(schemaV2, dbPath)
+	if err != nil {
+		t.Fatalf("column type change failed: %v", err)
+	}
+	defer db2.Close()
+
+	// Check that data was migrated (SQLite stores any type in any column)
+	row := db2.QueryRow("SELECT COUNT(*) FROM users")
+	var count int
+	if err := row.Scan(&count); err != nil {
+		t.Fatalf("failed to count rows: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 rows, got %d", count)
+	}
+
+	// Verify the TEXT values are still there (SQLite is dynamically typed)
+	row = db2.QueryRow("SELECT name FROM users WHERE id=1")
+	var name string
+	if err := row.Scan(&name); err != nil {
+		t.Fatalf("failed to get name: %v", err)
+	}
+	if name != "123" {
+		t.Fatalf("expected '123', got %s", name)
+	}
+	t.Logf("Column type change succeeded (SQLite is dynamically typed)")
+}
+
+// Edge case tests for schema compatibility issues (currently disabled - documenting limitations)
+func DISABLED_TestUniqueConstraintViolation(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Create database without unique constraint
+	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);`
+	db, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	_, err = db.Exec("INSERT INTO users (email) VALUES ('test@example.com'), ('test@example.com')")
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+	db.Close()
+
+	// Try to add UNIQUE constraint to column with duplicate values (currently succeeds)
+	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT UNIQUE);`
+	db2, err := autosqlite.Open(schemaV2, dbPath)
+	if err != nil {
+		t.Fatalf("unique constraint addition failed: %v", err)
+	}
+	defer db2.Close()
+
+	// Check that data was migrated (though constraint may be violated)
+	row := db2.QueryRow("SELECT COUNT(*) FROM users")
+	var count int
+	if err := row.Scan(&count); err != nil {
+		t.Fatalf("failed to count rows: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 rows, got %d", count)
+	}
+	t.Logf("Unique constraint addition succeeded (but constraint may be violated)")
+}
+
+func DISABLED_TestNotNullConstraintViolation(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Create database with nullable column
+	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`
+	db, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	_, err = db.Exec("INSERT INTO users (name) VALUES ('alice'), (NULL)")
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+	db.Close()
+
+	// Try to add NOT NULL constraint to column with NULL values
+	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);`
+	_, err = autosqlite.Open(schemaV2, dbPath)
+	if err == nil {
+		t.Fatalf("expected error when adding NOT NULL constraint to column with NULL values")
+	}
+	t.Logf("NOT NULL constraint violation failed as expected: %v", err)
+}
+
+func DISABLED_TestForeignKeyConstraintViolation(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Create database with posts referencing non-existent users
+	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+	CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT);`
+	db, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	_, err = db.Exec("INSERT INTO posts (user_id, title) VALUES (999, 'orphaned post')")
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+	db.Close()
+
+	// Try to add FOREIGN KEY constraint to posts.user_id (currently succeeds)
+	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+	CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT, FOREIGN KEY (user_id) REFERENCES users(id));`
+	db2, err := autosqlite.Open(schemaV2, dbPath)
+	if err != nil {
+		t.Fatalf("foreign key constraint addition failed: %v", err)
+	}
+	defer db2.Close()
+
+	// Check that data was migrated (though constraint may be violated)
+	row := db2.QueryRow("SELECT COUNT(*) FROM posts")
+	var count int
+	if err := row.Scan(&count); err != nil {
+		t.Fatalf("failed to count rows: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 row, got %d", count)
+	}
+	t.Logf("Foreign key constraint addition succeeded (but constraint may be violated)")
+}
+
+func DISABLED_TestIndexNotPreserved(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Create database with index
+	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);
+	CREATE INDEX idx_users_email ON users(email);`
+	db, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	db.Close()
+
+	// Migrate to schema without index
+	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);`
+	db2, err := autosqlite.Open(schemaV2, dbPath)
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	defer db2.Close()
+
+	// Check if index still exists (it shouldn't)
+	row := db2.QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_users_email'")
+	var indexName string
+	if err := row.Scan(&indexName); err == nil {
+		t.Fatalf("index should have been dropped during migration, but still exists")
+	}
+	t.Logf("Index was dropped during migration as expected")
+}
+
+func DISABLED_TestCheckConstraintViolation(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Create database without check constraint
+	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, age INTEGER);`
+	db, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	_, err = db.Exec("INSERT INTO users (age) VALUES (25), (-5)")
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+	db.Close()
+
+	// Try to add CHECK constraint that existing data violates (currently succeeds)
+	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, age INTEGER CHECK (age >= 0));`
+	db2, err := autosqlite.Open(schemaV2, dbPath)
+	if err != nil {
+		t.Fatalf("check constraint addition failed: %v", err)
+	}
+	defer db2.Close()
+
+	// Check that data was migrated (though constraint may be violated)
+	row := db2.QueryRow("SELECT COUNT(*) FROM users")
+	var count int
+	if err := row.Scan(&count); err != nil {
+		t.Fatalf("failed to count rows: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 rows, got %d", count)
+	}
+	t.Logf("Check constraint addition succeeded (but constraint may be violated)")
+}
+
+func DISABLED_TestCircularDependency(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Create database with circular foreign key references
+	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, manager_id INTEGER);
+	CREATE TABLE managers (id INTEGER PRIMARY KEY, name TEXT, user_id INTEGER);`
+	db, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	db.Close()
+
+	// Try to add circular foreign key constraints (currently succeeds)
+	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, manager_id INTEGER, FOREIGN KEY (manager_id) REFERENCES managers(id));
+	CREATE TABLE managers (id INTEGER PRIMARY KEY, name TEXT, user_id INTEGER, FOREIGN KEY (user_id) REFERENCES users(id));`
+	db2, err := autosqlite.Open(schemaV2, dbPath)
+	if err != nil {
+		t.Fatalf("circular dependency addition failed: %v", err)
+	}
+	defer db2.Close()
+
+	t.Logf("Circular dependency addition succeeded (but may cause issues)")
+}
+
+func DISABLED_TestViewNotPreserved(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Create database with view
+	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
+	CREATE VIEW user_names AS SELECT name FROM users;`
+	db, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	db.Close()
+
+	// Migrate to schema without view
+	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`
+	db2, err := autosqlite.Open(schemaV2, dbPath)
+	if err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	defer db2.Close()
+
+	// Check if view still exists (it shouldn't)
+	row := db2.QueryRow("SELECT name FROM sqlite_master WHERE type='view' AND name='user_names'")
+	var viewName string
+	if err := row.Scan(&viewName); err == nil {
+		t.Fatalf("view should have been dropped during migration, but still exists")
+	}
+	t.Logf("View was dropped during migration as expected")
+}
+
 func tempDBPath(t *testing.T) string {
 	dir := t.TempDir()
 	return filepath.Join(dir, "test.db")
