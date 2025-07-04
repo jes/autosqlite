@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/jes/autosqlite"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -1075,6 +1077,54 @@ func TestMemoryDatabaseHandling(t *testing.T) {
 	var name string
 	if err := row.Scan(&name); err != nil || name != "memory_test" {
 		t.Fatalf("data not found in memory db: %v", err)
+	}
+}
+
+func TestLockFileCleanup(t *testing.T) {
+	// Test that lock files are only cleaned up when successfully acquired
+	dbPath := tempDBPath(t)
+
+	// Create initial database
+	db, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	db.Close()
+
+	// Create a proper lock file to simulate a failed lock acquisition
+	filename := dbPath // No query params in test
+	lockPath := filename + ".migration.lock"
+
+	// Create a proper lock using flock
+	existingLock := flock.New(lockPath)
+	if err := existingLock.Lock(); err != nil {
+		t.Fatalf("failed to create lock: %v", err)
+	}
+
+	// Try to migrate in a goroutine - this should block waiting for the lock
+	done := make(chan bool)
+	go func() {
+		_, _ = autosqlite.Migrate(schemaV2, dbPath)
+		done <- true
+	}()
+
+	// Wait a short time to let the migration attempt to acquire the lock
+	time.Sleep(100 * time.Millisecond)
+
+	// Release the lock before the migration can complete
+	existingLock.Unlock()
+
+	// Wait for migration to complete
+	select {
+	case <-done:
+		// Migration completed
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Migration did not complete after lock release")
+	}
+
+	// Verify the lock file was cleaned up after successful migration
+	if _, err := os.Stat(lockPath); err == nil {
+		t.Fatalf("lock file should have been cleaned up after successful migration")
 	}
 }
 
