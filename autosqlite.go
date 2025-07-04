@@ -7,6 +7,7 @@
 //   - Data preservation for common columns
 //   - Backup and atomic replacement
 //   - Skips migration if schema is unchanged
+//   - Prevents backward migrations by tracking hashes of schemas already applied
 //
 // Usage:
 //
@@ -200,6 +201,20 @@ func Migrate(schema, dbPath string) (*sql.DB, error) {
 			return nil, fmt.Errorf("failed to open existing database: %w", err)
 		}
 		return db, nil
+	}
+
+	// Re-check for backward migration after acquiring the lock
+	dbCheck, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database for version check after lock: %w", err)
+	}
+	defer dbCheck.Close()
+	isForward, err := isForwardMigration(dbCheck, schema)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check migration direction after lock: %w", err)
+	}
+	if !isForward {
+		return nil, fmt.Errorf("backward migration detected after lock: the new schema appears to remove tables or columns. This is not allowed to prevent data loss. If you need to downgrade, use a different approach")
 	}
 
 	if err := copyFile(dbPath, backupPath); err != nil {
