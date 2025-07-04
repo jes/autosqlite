@@ -5,9 +5,11 @@ A Go module for creating SQLite databases from schema files.
 ## Features
 
 - Creates SQLite databases from SQL schema strings
+- Automatic schema migration with data preservation
 - Returns a `*sql.DB` handle for immediate use
-- Ensures database doesn't already exist (returns error if it does)
+- Efficient: skips migration if schema is unchanged
 - Automatically creates necessary directories
+- Creates backups before migration
 - Uses the `mattn/go-sqlite3` driver
 
 ## Installation
@@ -23,72 +25,56 @@ package main
 
 import (
     "log"
-    "os"
-    "github.com/jes/autosqlite"
-)
-
-func main() {
-    schema, err := os.ReadFile("schema.sql")
-    if err != nil {
-        log.Fatalf("Failed to read schema: %v", err)
-    }
-    db, err := autosqlite.Open(string(schema), "myapp.db")
-    if err != nil {
-        log.Fatalf("Failed to create database: %v", err)
-    }
-    defer db.Close()
-    // Use the database...
-    // db is a *db.SQL
-}
-```
-
-## Embedding a Schema with go:embed
-
-You can embed your schema at compile time using Go's `embed` package:
-
-```go
-import (
     "github.com/jes/autosqlite"
     _ "github.com/mattn/go-sqlite3"
     "embed"
-    "log"
 )
 
 //go:embed schema.sql
-var schema string
+var schemaSQL string
 
 func main() {
-    db, err := autosqlite.Open(schema, "myapp.db")
+    db, err := autosqlite.Open(schemaSQL, "myapp.db")
     if err != nil {
-        log.Fatalf("Failed to create database: %v", err)
+        log.Fatal(err)
     }
     defer db.Close()
+    
     // Use the database...
 }
 ```
 
-## Function Signature
+## Function Signatures
 
+### Open
 ```go
 func Open(schema string, dbPath string) (*sql.DB, error)
 ```
+Creates or migrates a SQLite database at dbPath using the provided schema SQL.
+If the database does not exist, it is created. If it exists and the schema is unchanged,
+the database is opened as-is. If the schema has changed, a migration is performedand
+the previous database file is backed up with a ".backup" extension.
 
-### Parameters
+Returns a *sql.DB handle or an error.
 
-- `schema`: SQL schema as a string
-- `dbPath`: Path where the SQLite database should be created
+### Migrate
+```go
+func Migrate(schema string, dbPath string) (*sql.DB, error)
+```
+Migrates an existing SQLite database at dbPath to the provided schema.
+It creates a backup with a ".backup" extension, migrates data for common columns,
+and atomically replaces the old database.
 
-### Return Value
+Returns a *sql.DB handle or an error.
 
-- `*sql.DB`: Database handle for immediate use
-- `error`: Error if database creation fails or if database already exists
+### MigrateToNewFile
+```go
+func MigrateToNewFile(schema string, oldDbPath string, newDbPath string) (*sql.DB, error)
+```
+Migrates an existing SQLite database at oldDbPath to the provided schema,
+writing the result to newDbPath. It migrates data for common columns and tables.
 
-## Behavior
-
-- If the database file already exists, returns an error
-- If the database doesn't exist, creates it using the provided schema
-- Automatically creates any necessary directories for the database file
-- Returns a ready-to-use database handle
+Returns a *sql.DB handle to the new database or an error.
 
 ## Example
 

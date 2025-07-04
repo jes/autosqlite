@@ -85,7 +85,8 @@ func Open(schema, dbPath string) (*sql.DB, error) {
 }
 
 // Migrate migrates an existing SQLite database at dbPath to the provided schema.
-// It creates a backup, migrates data for common columns, and atomically replaces the old database.
+// It creates a backup with a ".backup" extension, migrates data for common columns,
+// and atomically replaces the old database.
 // Returns a *sql.DB handle or an error.
 func Migrate(schema, dbPath string) (*sql.DB, error) {
 	backupPath := dbPath + ".backup"
