@@ -85,58 +85,9 @@ func Open(schema, dbPath string) (*sql.DB, error) {
 		}
 
 		if !isForward {
-			return nil, fmt.Errorf("backward migration detected: the new schema appears to remove tables or columns. This is not allowed to prevent data loss. If you need to downgrade, use a different approach")
+			return nil, fmt.Errorf("backward migration detected: this is not allowed to prevent data loss. If you need to downgrade, clear out the _autosqlite_version table")
 		}
 
-		return Migrate(schema, dbPath)
-	}
-
-	dbDir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create database directory: %w", err)
-	}
-
-	db, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
-	}
-
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to ping database: %w", err)
-	}
-
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to execute schema: %w", err)
-	}
-
-	// Record the initial schema version
-	version := &SchemaVersion{
-		Version: 1,
-		Hash:    calculateSchemaHash(schema),
-	}
-
-	if err := recordSchemaVersion(db, version, schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to record schema version: %w", err)
-	}
-
-	return db, nil
-}
-
-// OpenForTesting creates or migrates a SQLite database at dbPath using the provided schema SQL.
-// This function bypasses backward migration protection and should only be used for testing.
-// Use Open() for production code.
-func OpenForTesting(schema, dbPath string) (*sql.DB, error) {
-	if _, err := os.Stat(dbPath); err == nil {
-		if SchemasEqual(schema, dbPath) {
-			db, err := sql.Open("sqlite3", dbPath)
-			if err != nil {
-				return nil, fmt.Errorf("failed to open existing database: %w", err)
-			}
-			return db, nil
-		}
 		return Migrate(schema, dbPath)
 	}
 
@@ -214,7 +165,7 @@ func Migrate(schema, dbPath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to check migration direction after lock: %w", err)
 	}
 	if !isForward {
-		return nil, fmt.Errorf("backward migration detected after lock: the new schema appears to remove tables or columns. This is not allowed to prevent data loss. If you need to downgrade, use a different approach")
+		return nil, fmt.Errorf("backward migration detected after lock: this is not allowed to prevent data loss. If you need to downgrade, clear out the _autosqlite_version table")
 	}
 
 	if err := copyFile(dbPath, backupPath); err != nil {
@@ -403,7 +354,7 @@ func GetTableInfo(db *sql.DB, tableName string) ([]string, error) {
 	return columns, rows.Err()
 }
 
-// GetTables returns a list of table names in the database.
+// GetTables returns a list of user table names in the database (ignores _autosqlite_version).
 func GetTables(db *sql.DB) ([]string, error) {
 	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type='table'")
 	if err != nil {
@@ -416,6 +367,9 @@ func GetTables(db *sql.DB) ([]string, error) {
 		var tableName string
 		if err := rows.Scan(&tableName); err != nil {
 			return nil, err
+		}
+		if tableName == versionTableName {
+			continue
 		}
 		tables = append(tables, tableName)
 	}
