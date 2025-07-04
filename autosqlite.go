@@ -59,14 +59,6 @@ const versionTableName = "_autosqlite_version"
 // extractFilenameFromConnectionString extracts the filename part from a SQLite connection string,
 // removing any query parameters. For example, "foo.db?_busy_timeout=1000" becomes "foo.db".
 func extractFilenameFromConnectionString(connectionString string) string {
-	// Handle special cases
-	if connectionString == ":memory:" {
-		return ":memory:"
-	}
-	if connectionString == ":temp:" || connectionString == ":temporary:" {
-		return connectionString
-	}
-
 	// Find the first '?' which indicates query parameters
 	if idx := strings.IndexByte(connectionString, '?'); idx != -1 {
 		return connectionString[:idx]
