@@ -15,6 +15,12 @@ When a schema change is found, Autosqlite creates a database from the new schema
 and copies all of the data from the old database where table and column names are
 equal, and then renames the new database on top of the old one.
 
+Autosqlite creates a table called `_autosqlite_version`, listing schemas that
+have been applied by Autosqlite. If Autosqlite finds itself trying to apply a
+schema that is older than the newest version that has been applied (for example
+because you launched an old version of your program) it bails out instead of
+reverting to the old schema.
+
 ## Caveats
 
 Schema migration might not do the right thing in some circumstances:
@@ -28,6 +34,8 @@ Schema migration might not do the right thing in some circumstances:
    re-populate the tables in the right order, leading to migration failures
  - If you introduce for example a `NOT NULL` constraint on a column that
    previously had `NULL` values then migration will fail
+ - You can't revert to an old schema, because of the backwards migration
+   prevention; you'd need to make some other trivial change to the schema
 
 ## Recommended usage
 
