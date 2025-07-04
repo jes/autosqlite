@@ -17,7 +17,7 @@ import (
 func Open(schema, dbPath string) (*sql.DB, error) {
 	// Check if database already exists
 	if _, err := os.Stat(dbPath); err == nil {
-		return migrateDatabase(schema, dbPath)
+		return Migrate(schema, dbPath)
 	}
 
 	// Ensure the directory for the database file exists
@@ -47,83 +47,85 @@ func Open(schema, dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
-// migrateDatabase handles the migration of an existing database to a new schema
-func migrateDatabase(schema, dbPath string) (*sql.DB, error) {
-	// Create backup of existing database
+func Migrate(schema, dbPath string) (*sql.DB, error) {
+	// Create a backup of the database
 	backupPath := dbPath + ".backup"
 	if err := copyFile(dbPath, backupPath); err != nil {
 		return nil, fmt.Errorf("failed to create backup: %w", err)
 	}
 
+	newDbPath := dbPath + ".tmp"
+
+	// Migrate to a new file
+	db, err := MigrateToNewFile(schema, dbPath, newDbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to migrate to new file: %w", err)
+	}
+	db.Close()
+
+	// Replace old database with new one
+	if err := os.Rename(newDbPath, dbPath); err != nil {
+		return nil, fmt.Errorf("failed to rename new database: %w", err)
+	}
+
+	// Reopen the DB from the new path just in case SQLite cares about the exact path
+	db, err = sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open migrated database: %w", err)
+	}
+
+	return db, nil
+}
+
+// Migrate handles the migration of an existing database to a new schema
+func MigrateToNewFile(schema, oldDbPath string, newDbPath string) (*sql.DB, error) {
 	// Open existing database
-	oldDB, err := sql.Open("sqlite3", dbPath)
+	oldDB, err := sql.Open("sqlite3", oldDbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open existing database: %w", err)
 	}
 	defer oldDB.Close()
 
 	// Create temporary database with new schema
-	tempPath := dbPath + ".tmp"
-	tempDB, err := sql.Open("sqlite3", tempPath)
+	newDB, err := sql.Open("sqlite3", newDbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary database: %w", err)
 	}
 
 	// Execute new schema on temporary database
-	if _, err := tempDB.Exec(schema); err != nil {
-		tempDB.Close()
-		os.Remove(tempPath)
+	if _, err := newDB.Exec(schema); err != nil {
+		newDB.Close()
+		os.Remove(newDbPath)
 		return nil, fmt.Errorf("failed to execute new schema: %w", err)
 	}
 
 	// Get tables from both databases
 	oldTables, err := getTables(oldDB)
 	if err != nil {
-		tempDB.Close()
-		os.Remove(tempPath)
+		newDB.Close()
+		os.Remove(newDbPath)
 		return nil, fmt.Errorf("failed to get tables from old database: %w", err)
 	}
 
-	newTables, err := getTables(tempDB)
+	newTables, err := getTables(newDB)
 	if err != nil {
-		tempDB.Close()
-		os.Remove(tempPath)
+		newDB.Close()
+		os.Remove(newDbPath)
 		return nil, fmt.Errorf("failed to get tables from new database: %w", err)
 	}
 
 	// Migrate data for common tables
 	for _, tableName := range newTables {
 		if slices.Contains(oldTables, tableName) {
-			if err := migrateTable(oldDB, tempDB, tableName); err != nil {
-				tempDB.Close()
-				os.Remove(tempPath)
+			if err := migrateTable(oldDB, newDB, tableName); err != nil {
+				newDB.Close()
+				os.Remove(newDbPath)
 				return nil, fmt.Errorf("failed to migrate table %s: %w", tableName, err)
 			}
 		}
 	}
 
-	// Close temporary database
-	tempDB.Close()
-
-	// Replace old database with new one
-	if err := os.Remove(dbPath); err != nil {
-		os.Remove(tempPath)
-		return nil, fmt.Errorf("failed to remove old database: %w", err)
-	}
-
-	if err := os.Rename(tempPath, dbPath); err != nil {
-		// Try to restore from backup
-		os.Rename(backupPath, dbPath)
-		return nil, fmt.Errorf("failed to replace database: %w", err)
-	}
-
-	// Open the migrated database
-	db, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open migrated database: %w", err)
-	}
-
-	return db, nil
+	return newDB, nil
 }
 
 // getTables returns a list of table names in the database
