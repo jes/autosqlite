@@ -1,4 +1,4 @@
-package tests
+package autosqlite
 
 import (
 	"database/sql"
@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	"github.com/jes/autosqlite"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -22,7 +21,7 @@ const schemaV2DropPosts = `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT
 
 func TestCreateNewDB(t *testing.T) {
 	dbPath := tempDBPath(t)
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -39,7 +38,7 @@ func TestCreateNewDB(t *testing.T) {
 func TestMigrationAddsColumn(t *testing.T) {
 	dbPath := tempDBPath(t)
 	// Create v1
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -50,7 +49,7 @@ func TestMigrationAddsColumn(t *testing.T) {
 	db.Close()
 
 	// Migrate to v2
-	db2, err := autosqlite.Open(schemaV2, dbPath)
+	db2, err := Open(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
@@ -90,7 +89,7 @@ func TestMigrationAddsColumn(t *testing.T) {
 func TestMigrationDeletesColumn(t *testing.T) {
 	dbPath := tempDBPath(t)
 	// Create v2 (with name column)
-	db, err := autosqlite.Open(schemaV2, dbPath)
+	db, err := Open(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -104,7 +103,7 @@ func TestMigrationDeletesColumn(t *testing.T) {
 	os.Remove(dbPath)
 
 	// Migrate to v2DropName (drops name column)
-	db2, err := autosqlite.Open(schemaV2DropName, dbPath)
+	db2, err := Open(schemaV2DropName, dbPath)
 	if err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
@@ -143,14 +142,14 @@ func TestMigrationDeletesColumn(t *testing.T) {
 func TestMigrationAddsTable(t *testing.T) {
 	dbPath := tempDBPath(t)
 	// Create v1 (users only)
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
 	db.Close()
 
 	// Migrate to v1WithPosts (adds posts table)
-	db2, err := autosqlite.Open(schemaV1WithPosts, dbPath)
+	db2, err := Open(schemaV1WithPosts, dbPath)
 	if err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
@@ -167,7 +166,7 @@ func TestMigrationAddsTable(t *testing.T) {
 func TestMigrationDeletesTable(t *testing.T) {
 	dbPath := tempDBPath(t)
 	// Create v1WithPosts (users and posts)
-	db, err := autosqlite.Open(schemaV1WithPosts, dbPath)
+	db, err := Open(schemaV1WithPosts, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -181,7 +180,7 @@ func TestMigrationDeletesTable(t *testing.T) {
 	os.Remove(dbPath)
 
 	// Migrate to v2DropPosts (drops posts table)
-	db2, err := autosqlite.Open(schemaV2DropPosts, dbPath)
+	db2, err := Open(schemaV2DropPosts, dbPath)
 	if err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
@@ -199,7 +198,7 @@ func TestIdenticalSchemaSkipMigration(t *testing.T) {
 	dbPath := tempDBPath(t)
 
 	// Create database with schemaV1
-	db1, err := autosqlite.Open(schemaV1, dbPath)
+	db1, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -210,7 +209,7 @@ func TestIdenticalSchemaSkipMigration(t *testing.T) {
 	db1.Close()
 
 	// Open with same schema - should skip migration
-	db2, err := autosqlite.Open(schemaV1, dbPath)
+	db2, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to open db with identical schema: %v", err)
 	}
@@ -235,7 +234,7 @@ func TestMigrateFunction(t *testing.T) {
 	dbPath := tempDBPath(t)
 
 	// Create initial database
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -246,7 +245,7 @@ func TestMigrateFunction(t *testing.T) {
 	db.Close()
 
 	// Test Migrate function directly
-	db2, err := autosqlite.Migrate(schemaV2, dbPath)
+	db2, err := Migrate(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("migrate failed: %v", err)
 	}
@@ -271,7 +270,7 @@ func TestMigrateToNewFile(t *testing.T) {
 	newDbPath := tempDBPath(t) + ".new"
 
 	// Create initial database
-	db, err := autosqlite.Open(schemaV1, oldDbPath)
+	db, err := Open(schemaV1, oldDbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -282,7 +281,7 @@ func TestMigrateToNewFile(t *testing.T) {
 	db.Close()
 
 	// Test MigrateToNewFile function
-	db2, err := autosqlite.MigrateToNewFile(schemaV2, oldDbPath, newDbPath)
+	db2, err := MigrateToNewFile(schemaV2, oldDbPath, newDbPath)
 	if err != nil {
 		t.Fatalf("migrate to new file failed: %v", err)
 	}
@@ -312,32 +311,32 @@ func TestSchemasEqual(t *testing.T) {
 	dbPath := tempDBPath(t)
 
 	// Create database with schemaV1
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
 	db.Close()
 
 	// Test identical schema
-	if !autosqlite.SchemasEqual(schemaV1, dbPath) {
+	if !SchemasEqual(schemaV1, dbPath) {
 		t.Fatalf("identical schemas should be equal")
 	}
 
 	// Test different schema
-	if autosqlite.SchemasEqual(schemaV2, dbPath) {
+	if SchemasEqual(schemaV2, dbPath) {
 		t.Fatalf("different schemas should not be equal")
 	}
 }
 
 func TestGetTables(t *testing.T) {
 	dbPath := tempDBPath(t)
-	db, err := autosqlite.Open(schemaV1WithPosts, dbPath)
+	db, err := Open(schemaV1WithPosts, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
 	defer db.Close()
 
-	tables, err := autosqlite.GetTables(db)
+	tables, err := GetTables(db)
 	if err != nil {
 		t.Fatalf("GetTables failed: %v", err)
 	}
@@ -363,13 +362,13 @@ func TestGetTables(t *testing.T) {
 
 func TestGetColumns(t *testing.T) {
 	dbPath := tempDBPath(t)
-	db, err := autosqlite.Open(schemaV2, dbPath)
+	db, err := Open(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
 	defer db.Close()
 
-	columns, err := autosqlite.GetColumns(db, "users")
+	columns, err := GetColumns(db, "users")
 	if err != nil {
 		t.Fatalf("GetColumns failed: %v", err)
 	}
@@ -394,18 +393,18 @@ func TestGetColumns(t *testing.T) {
 }
 
 func TestFindCommonColumns(t *testing.T) {
-	oldCols := []autosqlite.ColumnInfo{
+	oldCols := []ColumnInfo{
 		{Name: "id"},
 		{Name: "name"},
 		{Name: "email"},
 	}
-	newCols := []autosqlite.ColumnInfo{
+	newCols := []ColumnInfo{
 		{Name: "id"},
 		{Name: "name"},
 		{Name: "phone"},
 	}
 
-	common := autosqlite.FindCommonColumns(oldCols, newCols)
+	common := FindCommonColumns(oldCols, newCols)
 	expected := []string{"id", "name"}
 
 	if len(common) != len(expected) {
@@ -431,7 +430,7 @@ func TestInvalidSchema(t *testing.T) {
 	dbPath := tempDBPath(t)
 
 	// Test with invalid SQL
-	_, err := autosqlite.Open("INVALID SQL", dbPath)
+	_, err := Open("INVALID SQL", dbPath)
 	if err == nil {
 		t.Fatalf("should fail with invalid SQL")
 	}
@@ -441,13 +440,13 @@ func TestEmptySchema(t *testing.T) {
 	dbPath := tempDBPath(t)
 
 	// Test with empty schema - should create an empty database
-	db, err := autosqlite.Open("", dbPath)
+	db, err := Open("", dbPath)
 	if err != nil {
 		t.Fatalf("empty schema should create empty database: %v", err)
 	}
 	defer db.Close()
 
-	tables, err := autosqlite.GetTables(db)
+	tables, err := GetTables(db)
 	if err != nil {
 		t.Fatalf("GetTables failed: %v", err)
 	}
@@ -459,7 +458,7 @@ func TestEmptySchema(t *testing.T) {
 
 func TestNonExistentDatabasePath(t *testing.T) {
 	// Test with non-existent database path
-	_, err := autosqlite.Open(schemaV1, "/non/existent/path/db.sqlite")
+	_, err := Open(schemaV1, "/non/existent/path/db.sqlite")
 	if err == nil {
 		t.Fatalf("should fail with non-existent path")
 	}
@@ -467,7 +466,7 @@ func TestNonExistentDatabasePath(t *testing.T) {
 
 func TestSchemasEqualWithNonExistentDB(t *testing.T) {
 	// Test SchemasEqual with non-existent database
-	if autosqlite.SchemasEqual(schemaV1, "/non/existent/db.sqlite") {
+	if SchemasEqual(schemaV1, "/non/existent/db.sqlite") {
 		t.Fatalf("should return false for non-existent database")
 	}
 }
@@ -493,13 +492,13 @@ func TestComplexSchema(t *testing.T) {
 	`
 
 	dbPath := tempDBPath(t)
-	db, err := autosqlite.Open(complexSchema, dbPath)
+	db, err := Open(complexSchema, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db with complex schema: %v", err)
 	}
 	defer db.Close()
 
-	tables, err := autosqlite.GetTables(db)
+	tables, err := GetTables(db)
 	if err != nil {
 		t.Fatalf("GetTables failed: %v", err)
 	}
@@ -513,7 +512,7 @@ func TestLargeDatasetMigration(t *testing.T) {
 	dbPath := tempDBPath(t)
 
 	// Create database with data
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -528,7 +527,7 @@ func TestLargeDatasetMigration(t *testing.T) {
 	db.Close()
 
 	// Migrate to new schema
-	db2, err := autosqlite.Open(schemaV2, dbPath)
+	db2, err := Open(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
@@ -557,7 +556,7 @@ func TestConcurrentMigration(t *testing.T) {
 		dbPath := tempDBPath(t)
 
 		// Create initial database
-		db, err := autosqlite.Open(schema1, dbPath)
+		db, err := Open(schema1, dbPath)
 		if err != nil {
 			t.Fatalf("[%d] failed to create db: %v", iter, err)
 		}
@@ -567,7 +566,7 @@ func TestConcurrentMigration(t *testing.T) {
 		}
 
 		// Check that the 'email' column does NOT exist before migration
-		columns, err := autosqlite.GetColumns(db, "users")
+		columns, err := GetColumns(db, "users")
 		if err != nil {
 			t.Fatalf("[%d] GetColumns failed before migration: %v", iter, err)
 		}
@@ -584,7 +583,7 @@ func TestConcurrentMigration(t *testing.T) {
 		for i := 0; i < numGoroutines; i++ {
 			go func() {
 				<-start
-				_, err := autosqlite.Migrate(schema2, dbPath)
+				_, err := Migrate(schema2, dbPath)
 				results <- err
 			}()
 		}
@@ -604,7 +603,7 @@ func TestConcurrentMigration(t *testing.T) {
 		}
 
 		// Verify the database is correct
-		db2, err := autosqlite.Open(schema2, dbPath)
+		db2, err := Open(schema2, dbPath)
 		if err != nil {
 			t.Fatalf("[%d] failed to open db after concurrent migration: %v", iter, err)
 		}
@@ -617,7 +616,7 @@ func TestConcurrentMigration(t *testing.T) {
 		}
 
 		// Check that the 'email' column exists
-		columns, err = autosqlite.GetColumns(db2, "users")
+		columns, err = GetColumns(db2, "users")
 		if err != nil {
 			t.Fatalf("[%d] GetColumns failed: %v", iter, err)
 		}
@@ -638,7 +637,7 @@ func TestBackwardMigrationIssue(t *testing.T) {
 	dbPath := tempDBPath(t)
 
 	// Step 1: Create database with old schema (V1)
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db with V1 schema: %v", err)
 	}
@@ -649,7 +648,7 @@ func TestBackwardMigrationIssue(t *testing.T) {
 	db.Close()
 
 	// Step 2: Migrate to new schema (V2)
-	db, err = autosqlite.Open(schemaV2, dbPath)
+	db, err = Open(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("failed to migrate to V2 schema: %v", err)
 	}
@@ -660,7 +659,7 @@ func TestBackwardMigrationIssue(t *testing.T) {
 	db.Close()
 
 	// Step 3: Attempt to migrate back to old schema (should be blocked)
-	_, err = autosqlite.Open(schemaV1, dbPath)
+	_, err = Open(schemaV1, dbPath)
 	if err == nil {
 		t.Fatalf("backward migration should have been prevented")
 	}
@@ -676,7 +675,7 @@ func TestBackwardMigrationIssue(t *testing.T) {
 	defer db2.Close()
 
 	// Check that the email column still exists (should not have been dropped)
-	columns, err := autosqlite.GetColumns(db2, "users")
+	columns, err := GetColumns(db2, "users")
 	if err != nil {
 		t.Fatalf("GetColumns failed: %v", err)
 	}
@@ -706,7 +705,7 @@ func TestColumnTypeChange(t *testing.T) {
 
 	// Create database with TEXT column
 	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -718,7 +717,7 @@ func TestColumnTypeChange(t *testing.T) {
 
 	// Change column type to INTEGER (SQLite is dynamically typed, so this works fine)
 	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name INTEGER);`
-	db2, err := autosqlite.Open(schemaV2, dbPath)
+	db2, err := Open(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("column type change failed: %v", err)
 	}
@@ -751,7 +750,7 @@ func DISABLED_TestUniqueConstraintViolation(t *testing.T) {
 
 	// Create database without unique constraint
 	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);`
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -763,7 +762,7 @@ func DISABLED_TestUniqueConstraintViolation(t *testing.T) {
 
 	// Try to add UNIQUE constraint to column with duplicate values (currently succeeds)
 	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT UNIQUE);`
-	db2, err := autosqlite.Open(schemaV2, dbPath)
+	db2, err := Open(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("unique constraint addition failed: %v", err)
 	}
@@ -786,7 +785,7 @@ func TestNotNullConstraintWithDefault(t *testing.T) {
 
 	// Create database with nullable column
 	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -798,7 +797,7 @@ func TestNotNullConstraintWithDefault(t *testing.T) {
 
 	// Try to add NOT NULL constraint with DEFAULT to column with NULL values
 	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT 'default');`
-	db2, err := autosqlite.Open(schemaV2, dbPath)
+	db2, err := Open(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("failed to migrate: %v", err)
 	}
@@ -840,7 +839,7 @@ func TestNotNullConstraintViolation(t *testing.T) {
 
 	// Create database with nullable column
 	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -853,7 +852,7 @@ func TestNotNullConstraintViolation(t *testing.T) {
 	// Try to add NOT NULL constraint WITHOUT DEFAULT to column with NULL values
 	// This should fail because there's no default value to use
 	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);`
-	_, err = autosqlite.Open(schemaV2, dbPath)
+	_, err = Open(schemaV2, dbPath)
 	if err == nil {
 		t.Fatalf("should fail when adding NOT NULL constraint without DEFAULT to column with NULL values")
 	}
@@ -865,7 +864,7 @@ func DISABLED_TestForeignKeyConstraintViolation(t *testing.T) {
 	// Create database with posts referencing non-existent users
 	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
 	CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT);`
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -878,7 +877,7 @@ func DISABLED_TestForeignKeyConstraintViolation(t *testing.T) {
 	// Try to add FOREIGN KEY constraint to posts.user_id (currently succeeds)
 	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
 	CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER, title TEXT, FOREIGN KEY (user_id) REFERENCES users(id));`
-	db2, err := autosqlite.Open(schemaV2, dbPath)
+	db2, err := Open(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("foreign key constraint addition failed: %v", err)
 	}
@@ -902,7 +901,7 @@ func DISABLED_TestIndexNotPreserved(t *testing.T) {
 	// Create database with index
 	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);
 	CREATE INDEX idx_users_email ON users(email);`
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -910,7 +909,7 @@ func DISABLED_TestIndexNotPreserved(t *testing.T) {
 
 	// Migrate to schema without index
 	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);`
-	db2, err := autosqlite.Open(schemaV2, dbPath)
+	db2, err := Open(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
@@ -930,7 +929,7 @@ func DISABLED_TestCheckConstraintViolation(t *testing.T) {
 
 	// Create database without check constraint
 	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, age INTEGER);`
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -942,7 +941,7 @@ func DISABLED_TestCheckConstraintViolation(t *testing.T) {
 
 	// Try to add CHECK constraint that existing data violates (currently succeeds)
 	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, age INTEGER CHECK (age >= 0));`
-	db2, err := autosqlite.Open(schemaV2, dbPath)
+	db2, err := Open(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("check constraint addition failed: %v", err)
 	}
@@ -966,7 +965,7 @@ func DISABLED_TestCircularDependency(t *testing.T) {
 	// Create database with circular foreign key references
 	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, manager_id INTEGER);
 	CREATE TABLE managers (id INTEGER PRIMARY KEY, name TEXT, user_id INTEGER);`
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -975,7 +974,7 @@ func DISABLED_TestCircularDependency(t *testing.T) {
 	// Try to add circular foreign key constraints (currently succeeds)
 	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, manager_id INTEGER, FOREIGN KEY (manager_id) REFERENCES managers(id));
 	CREATE TABLE managers (id INTEGER PRIMARY KEY, name TEXT, user_id INTEGER, FOREIGN KEY (user_id) REFERENCES users(id));`
-	db2, err := autosqlite.Open(schemaV2, dbPath)
+	db2, err := Open(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("circular dependency addition failed: %v", err)
 	}
@@ -990,7 +989,7 @@ func DISABLED_TestViewNotPreserved(t *testing.T) {
 	// Create database with view
 	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);
 	CREATE VIEW user_names AS SELECT name FROM users;`
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -998,7 +997,7 @@ func DISABLED_TestViewNotPreserved(t *testing.T) {
 
 	// Migrate to schema without view
 	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`
-	db2, err := autosqlite.Open(schemaV2, dbPath)
+	db2, err := Open(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
@@ -1023,14 +1022,14 @@ func TestTriggerMigration(t *testing.T) {
 	END;`
 
 	// Create DB with schemaV1
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
 	db.Close()
 
 	// Migrate to schemaV2 (should add the trigger)
-	db2, err := autosqlite.Open(schemaV2, dbPath)
+	db2, err := Open(schemaV2, dbPath)
 	if err != nil {
 		t.Fatalf("migration failed: %v", err)
 	}
@@ -1063,7 +1062,7 @@ func TestQueryParametersHandling(t *testing.T) {
 	dbPathWithParams := tempDBPath(t) + "?_busy_timeout=1000&_journal_mode=WAL"
 
 	// Create database with query parameters
-	db, err := autosqlite.Open(schemaV1, dbPathWithParams)
+	db, err := Open(schemaV1, dbPathWithParams)
 	if err != nil {
 		t.Fatalf("failed to create db with query parameters: %v", err)
 	}
@@ -1083,7 +1082,7 @@ func TestQueryParametersHandling(t *testing.T) {
 
 	// Close and reopen with same query parameters
 	db.Close()
-	db2, err := autosqlite.Open(schemaV1, dbPathWithParams)
+	db2, err := Open(schemaV1, dbPathWithParams)
 	if err != nil {
 		t.Fatalf("failed to reopen db with query parameters: %v", err)
 	}
@@ -1098,7 +1097,7 @@ func TestQueryParametersHandling(t *testing.T) {
 
 	// Test migration with query parameters
 	db2.Close()
-	db3, err := autosqlite.Open(schemaV2, dbPathWithParams)
+	db3, err := Open(schemaV2, dbPathWithParams)
 	if err != nil {
 		t.Fatalf("migration with query parameters failed: %v", err)
 	}
@@ -1122,7 +1121,7 @@ func TestQueryParametersHandling(t *testing.T) {
 
 func TestMemoryDatabaseHandling(t *testing.T) {
 	// Test that :memory: databases are handled correctly
-	db, err := autosqlite.Open(schemaV1, ":memory:")
+	db, err := Open(schemaV1, ":memory:")
 	if err != nil {
 		t.Fatalf("failed to create in-memory db: %v", err)
 	}
@@ -1147,7 +1146,7 @@ func TestLockFileCleanup(t *testing.T) {
 	dbPath := tempDBPath(t)
 
 	// Create initial database
-	db, err := autosqlite.Open(schemaV1, dbPath)
+	db, err := Open(schemaV1, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create db: %v", err)
 	}
@@ -1166,7 +1165,7 @@ func TestLockFileCleanup(t *testing.T) {
 	// Try to migrate in a goroutine - this should block waiting for the lock
 	done := make(chan bool)
 	go func() {
-		_, _ = autosqlite.Migrate(schemaV2, dbPath)
+		_, _ = Migrate(schemaV2, dbPath)
 		done <- true
 	}()
 
