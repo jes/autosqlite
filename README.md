@@ -32,8 +32,9 @@ Schema migration might not do the right thing in some circumstances:
    it, you might lose data
  - If you use foreign key constraints, Autosqlite won't necessarily
    re-populate the tables in the right order, leading to migration failures
- - If you introduce for example a `NOT NULL` constraint on a column that
-   previously had `NULL` values then migration will fail
+ - If you introduce a `NOT NULL` constraint on a column that previously had `NULL` values, 
+   migration will fail unless the column also has a `DEFAULT` value (in which case NULL values 
+   will be replaced with the default)
  - You can't revert to an old schema, because of the backwards migration
    prevention; you'd need to make some other trivial change to the schema
 

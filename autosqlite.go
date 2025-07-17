@@ -8,6 +8,7 @@
 //   - Backup and atomic replacement
 //   - Skips migration if schema is unchanged
 //   - Prevents backward migrations by tracking hashes of schemas already applied
+//   - Handles NOT NULL constraints with DEFAULT values by replacing NULL values during migration
 //
 // Usage:
 //
@@ -52,6 +53,15 @@ type SchemaVersion struct {
 	Version   int    // Numeric version (optional, for explicit versioning)
 	Hash      string // SHA256 hash of the schema
 	Timestamp string // When this version was applied
+}
+
+// ColumnInfo represents detailed information about a database column
+type ColumnInfo struct {
+	Name         string         // Column name
+	Type         string         // SQLite data type (TEXT, INTEGER, etc.)
+	NotNull      bool           // Whether the column has a NOT NULL constraint
+	DefaultValue sql.NullString // Default value for the column (if any)
+	PrimaryKey   bool           // Whether the column is part of the primary key
 }
 
 const versionTableName = "_autosqlite_version"
@@ -436,14 +446,16 @@ func GetTables(db *sql.DB) ([]string, error) {
 }
 
 // MigrateTable migrates data from old table to new table, copying only common columns.
+// When migrating to a NOT NULL column with a DEFAULT value, NULL values from the old table
+// are automatically replaced with the DEFAULT value using SQL's COALESCE function.
 // Returns an error if migration fails.
 func MigrateTable(oldDB, newDB *sql.DB, tableName string) error {
-	oldColumns, err := GetColumns(oldDB, tableName)
+	oldColumns, err := GetColumnInfo(oldDB, tableName)
 	if err != nil {
 		return err
 	}
 
-	newColumns, err := GetColumns(newDB, tableName)
+	newColumns, err := GetColumnInfo(newDB, tableName)
 	if err != nil {
 		return err
 	}
@@ -453,7 +465,25 @@ func MigrateTable(oldDB, newDB *sql.DB, tableName string) error {
 		return nil // No common columns, skip migration
 	}
 
-	selectQuery := fmt.Sprintf("SELECT %s FROM %s", strings.Join(commonColumns, ", "), tableName)
+	// Create a map of column info for quick lookup
+	newColumnMap := make(map[string]ColumnInfo)
+	for _, col := range newColumns {
+		newColumnMap[col.Name] = col
+	}
+
+	// Build the SELECT query with COALESCE for NOT NULL columns with DEFAULT values
+	var selectColumns []string
+	for _, colName := range commonColumns {
+		newCol := newColumnMap[colName]
+		if newCol.NotNull && newCol.DefaultValue.Valid {
+			// For NOT NULL columns with DEFAULT, use COALESCE to replace NULL with DEFAULT
+			selectColumns = append(selectColumns, fmt.Sprintf("COALESCE(%s, %s) as %s", colName, newCol.DefaultValue.String, colName))
+		} else {
+			selectColumns = append(selectColumns, colName)
+		}
+	}
+
+	selectQuery := fmt.Sprintf("SELECT %s FROM %s", strings.Join(selectColumns, ", "), tableName)
 	rows, err := oldDB.Query(selectQuery)
 	if err != nil {
 		return err
@@ -502,13 +532,29 @@ func MigrateTable(oldDB, newDB *sql.DB, tableName string) error {
 
 // GetColumns returns a list of column names for a table.
 func GetColumns(db *sql.DB, tableName string) ([]string, error) {
+	columnInfos, err := GetColumnInfo(db, tableName)
+	if err != nil {
+		return nil, err
+	}
+
+	var columns []string
+	for _, col := range columnInfos {
+		columns = append(columns, col.Name)
+	}
+	return columns, nil
+}
+
+// GetColumnInfo returns detailed information about columns in a table.
+// This includes column names, types, constraints, and default values.
+// Returns an error if the table does not exist or if there's a database error.
+func GetColumnInfo(db *sql.DB, tableName string) ([]ColumnInfo, error) {
 	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", tableName))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var columns []string
+	var columns []ColumnInfo
 	for rows.Next() {
 		var index int
 		var name, typ, notNull string
@@ -516,22 +562,29 @@ func GetColumns(db *sql.DB, tableName string) ([]string, error) {
 		if err := rows.Scan(&index, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
 			return nil, err
 		}
-		columns = append(columns, name)
+
+		columns = append(columns, ColumnInfo{
+			Name:         name,
+			Type:         typ,
+			NotNull:      notNull == "1",
+			DefaultValue: defaultValue,
+			PrimaryKey:   pk.Valid && pk.String == "1",
+		})
 	}
 	return columns, rows.Err()
 }
 
 // FindCommonColumns returns columns that exist in both old and new tables.
-func FindCommonColumns(oldColumns, newColumns []string) []string {
+func FindCommonColumns(oldColumns, newColumns []ColumnInfo) []string {
 	oldSet := make(map[string]bool)
 	for _, col := range oldColumns {
-		oldSet[col] = true
+		oldSet[col.Name] = true
 	}
 
 	var common []string
 	for _, col := range newColumns {
-		if oldSet[col] {
-			common = append(common, col)
+		if oldSet[col.Name] {
+			common = append(common, col.Name)
 		}
 	}
 	return common

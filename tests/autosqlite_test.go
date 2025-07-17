@@ -394,8 +394,16 @@ func TestGetColumns(t *testing.T) {
 }
 
 func TestFindCommonColumns(t *testing.T) {
-	oldCols := []string{"id", "name", "email"}
-	newCols := []string{"id", "name", "phone"}
+	oldCols := []autosqlite.ColumnInfo{
+		{Name: "id"},
+		{Name: "name"},
+		{Name: "email"},
+	}
+	newCols := []autosqlite.ColumnInfo{
+		{Name: "id"},
+		{Name: "name"},
+		{Name: "phone"},
+	}
 
 	common := autosqlite.FindCommonColumns(oldCols, newCols)
 	expected := []string{"id", "name"}
@@ -773,7 +781,7 @@ func DISABLED_TestUniqueConstraintViolation(t *testing.T) {
 	t.Logf("Unique constraint addition succeeded (but constraint may be violated)")
 }
 
-func DISABLED_TestNotNullConstraintViolation(t *testing.T) {
+func TestNotNullConstraintWithDefault(t *testing.T) {
 	dbPath := tempDBPath(t)
 
 	// Create database with nullable column
@@ -788,13 +796,67 @@ func DISABLED_TestNotNullConstraintViolation(t *testing.T) {
 	}
 	db.Close()
 
-	// Try to add NOT NULL constraint to column with NULL values
+	// Try to add NOT NULL constraint with DEFAULT to column with NULL values
+	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT 'default');`
+	db2, err := autosqlite.Open(schemaV2, dbPath)
+	if err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+	defer db2.Close()
+
+	// Check that data was migrated
+	row := db2.QueryRow("SELECT COUNT(*) FROM users")
+	var count int
+	if err := row.Scan(&count); err != nil {
+		t.Fatalf("failed to count rows: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 rows, got %d", count)
+	}
+
+	// Verify the data was migrated correctly
+	// First row should have 'alice'
+	row = db2.QueryRow("SELECT name FROM users WHERE id=1")
+	var name string
+	if err := row.Scan(&name); err != nil {
+		t.Fatalf("failed to get name: %v", err)
+	}
+	if name != "alice" {
+		t.Fatalf("expected 'alice', got %s", name)
+	}
+
+	// Second row should have 'default' (NULL was replaced with DEFAULT)
+	row = db2.QueryRow("SELECT name FROM users WHERE id=2")
+	if err := row.Scan(&name); err != nil {
+		t.Fatalf("failed to get name: %v", err)
+	}
+	if name != "default" {
+		t.Fatalf("expected 'default', got %s", name)
+	}
+}
+
+func TestNotNullConstraintViolation(t *testing.T) {
+	dbPath := tempDBPath(t)
+
+	// Create database with nullable column
+	schemaV1 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);`
+	db, err := autosqlite.Open(schemaV1, dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+	_, err = db.Exec("INSERT INTO users (name) VALUES ('alice'), (NULL)")
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+	db.Close()
+
+	// Try to add NOT NULL constraint WITHOUT DEFAULT to column with NULL values
+	// This should fail because there's no default value to use
 	schemaV2 := `CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);`
 	_, err = autosqlite.Open(schemaV2, dbPath)
 	if err == nil {
-		t.Fatalf("expected error when adding NOT NULL constraint to column with NULL values")
+		t.Fatalf("should fail when adding NOT NULL constraint without DEFAULT to column with NULL values")
 	}
-	t.Logf("NOT NULL constraint violation failed as expected: %v", err)
 }
 
 func DISABLED_TestForeignKeyConstraintViolation(t *testing.T) {
